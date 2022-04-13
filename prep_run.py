@@ -52,6 +52,9 @@ def fill_tasks(file, dest):
     
     # Save file commands
     return galaxies['run']
+
+def make_runit():
+    pass
     
 
 if __name__=='__main__':
