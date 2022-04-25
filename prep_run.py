@@ -10,7 +10,7 @@ import os
 import sys
 
 ### String to repeat in taskfarmer file
-shft_cmd = "shifter --image=audreykoz/gradient:latest" \
+shft_cmd = "shifter --image=eramey16/gradient:latest" \
 " --volume='{}:/gradient_boosted/exports'" \
 " /opt/conda/bin/python /gradient_boosted/classify.py -r {} -d {}"
 dest_filename = ["tasks", ".txt"]
@@ -52,11 +52,7 @@ def fill_tasks(file, dest):
     
     # Save file commands
     return galaxies['run']
-
-def make_runit():
-    pass
     
-
 if __name__=='__main__':
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Create a task file from a table of galaxy coordinates")

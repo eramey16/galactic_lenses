@@ -34,6 +34,8 @@ Where:
 * Downloaded lensed galaxy data (classes A, B, and C) from [Huang et al 2021](https://sites.google.com/usfca.edu/neuralens/publications/lens-candidates-huang-2020b?authuser=0)
 * Created a task file for each of the galaxy categories above
 * Created a runit file maker with various user inputs
+* Edited classify.py to include extra columns
+* Combined all the lens galaxies in one single batch job
 
 # Thanks to:
 * Peter Nugent

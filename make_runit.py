@@ -14,7 +14,6 @@ def make_runit(dest, time, nodes, cores, const, taskfile):
     # Load template file
     with open(runit_file, 'r') as file:
         runit_text = file.read()
-    print(runit_text)
     
     # Replace template info with user inputs
     runit_text = runit_text.format(dest, time, nodes, cores, const, dest, taskfile)

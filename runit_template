@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --image=audreykoz/gradient:latest --volume="{}:/gradient_boosted/exports"
+#SBATCH --image=eramey16/gradient:latest --volume="{}:/gradient_boosted/exports"
 #SBATCH --qos=regular
 #SBATCH --time={}
 #SBATCH  -N {} -c {}
