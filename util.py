@@ -10,10 +10,15 @@ import sys
 
 cols = ["ls_id", "ra", "dec","type",
         "dered_mag_g","dered_mag_r","dered_mag_z",
-        "dered_mag_w1", "dered_mag_w2",'unc_g','unc_r',
-        'unc_z','unc_w1','unc_w2', "z_phot_median",
+        "dered_mag_w1", "dered_mag_w2",'snr_g','snr_r',
+        'snr_z','snr_w1','snr_w2', "z_phot_median",
         "z_phot_std",'z_spec','dered_flux_g','dered_flux_r',
-        'dered_flux_z','dered_flux_w1','dered_flux_w2'
+        'dered_flux_z','dered_flux_w1','dered_flux_w2', 
+        'dchisq_1', 'dchisq_2', 'dchisq_3', 'dchisq_4', 'dchisq_5',
+        'rchisq_g', 'rchisq_r', 'rchisq_z', 'rchisq_w1', 'rchisq_w2',
+        'psfsize_g', 'psfsize_r', 'psfsize_z', 'sersic', 'sersic_ivar',
+        'shape_e1', 'shape_e1_ivar', 'shape_e2', 'shape_e2_ivar', 
+        'shape_r', 'shape_r_ivar',
        ]
 
 def collect_lensed(path):
@@ -38,7 +43,7 @@ def collect_lensed(path):
     
     return data
 
-def collect_gals(path, tag='tst'):
+def collect_gals(path):
     """ Collects galaxy data into a CSV """
     # Get generic path for filenames
     key = os.path.join(path, 'galaxies_*.csv')
@@ -50,15 +55,13 @@ def collect_gals(path, tag='tst'):
         data.append(pd.read_csv(file, index_col=0, names=cols))
     data = pd.concat(data, ignore_index=True)
     
-    data['tag'] = tag
-    
     # Return result
     return data
 
-def merge_gals(path, tag='tst'):
+def merge_gals(path):
     """ Merges output files into one CSV """
     # Get both data tables
-    gals = collect_gals(path, tag=tag)
+    gals = collect_gals(path)
     lensed = collect_lensed(path)
     
     # Merge dataframes

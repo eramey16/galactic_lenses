@@ -12,7 +12,7 @@ import sys
 ### String to repeat in taskfarmer file
 shft_cmd = "shifter --image=eramey16/gradient:latest" \
 " --volume='{}:/gradient_boosted/exports'" \
-" /opt/conda/bin/python /gradient_boosted/classify.py -r {} -d {}"
+" /opt/conda/bin/python /gradient_boosted/classify.py -r {} -d {} -rd .00055554"
 dest_filename = ["tasks", ".txt"]
 coord_filename = ["coords", ".csv"]
 
