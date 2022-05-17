@@ -27,7 +27,7 @@ def make_runit(dest, time, nodes, cores, const, taskfile):
 if __name__=='__main__':
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="runit file for a taskfarmer job")
-    parser.add_argument("-s", "--taskfile", type=str, help = "Name of taskfile for taskfarmer")
+    parser.add_argument("-f", "--taskfile", type=str, help = "Name of taskfile for taskfarmer")
     parser.add_argument("-d", "--dest", type=str, help = "Destination folder for generated files")
     parser.add_argument("-t", "--time", type=str, default = '04:00:00', help = "Time for job to run")
     parser.add_argument("-N", "--nodes", type=str, default='15', help = "Number of nodes (>=2)")

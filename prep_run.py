@@ -12,7 +12,7 @@ import sys
 ### String to repeat in taskfarmer file
 shft_cmd = "shifter --image=eramey16/gradient:latest" \
 " --volume='{}:/gradient_boosted/exports'" \
-" /opt/conda/bin/python /gradient_boosted/classify.py -r {} -d {} -rd .00055554"
+" /opt/conda/bin/python /gradient_boosted/classify.py -r {} -d {} -rd {}"
 dest_filename = ["tasks", ".txt"]
 coord_filename = ["coords", ".csv"]
 
@@ -31,11 +31,11 @@ def process_tsv(file, dest):
     # Return dataframe with coordinates
     return radec
 
-def fill_tasks(file, dest):
+def fill_tasks(file, dest, rd):
     """ Fills in shifter tasks with the ra and dec info in file """
     # Read in galaxy file
     if os.path.exists(file):
-        galaxies = pd.read_csv(file, nrows=1000)
+        galaxies = pd.read_csv(file)
     else:
         print("No galaxy file found")
         sys.exit(1)
@@ -48,7 +48,7 @@ def fill_tasks(file, dest):
         sys.exit(1)
     
     # Format ra and dec into shifter commands
-    galaxies['run'] = [shft_cmd.format(dest,a,b) for a,b in zip(galaxies.ra, galaxies.dec)]
+    galaxies['run'] = [shft_cmd.format(dest,a,b, rd) for a,b in zip(galaxies.ra, galaxies.dec)]
     
     # Save file commands
     return galaxies['run']
@@ -60,6 +60,7 @@ if __name__=='__main__':
     parser.add_argument("-f", "--file", type=str, help = "Source file for target galaxies (must include RA and DEC)")
     parser.add_argument("-d", "--dest", nargs='?', type=str, help = "Destination folder for generated lens files")
     parser.add_argument("-t", "--tag", nargs='?', type=str, default = '', help = "Tag for destination files")
+    parser.add_argument("-rd", "--radius", nargs='?', type=str, default='.000277778', help="Search radius (in degrees)")
     args = parser.parse_args()
     
     # Check arguments
@@ -90,7 +91,7 @@ if __name__=='__main__':
         args.file = filename
     
     # Fill tasks from ra, dec in file
-    tasks = fill_tasks(args.file, args.dest)
+    tasks = fill_tasks(args.file, args.dest, args.radius)
     
     # Save to destination (tasks.txt)
     filename = ''.join(dest_filename)

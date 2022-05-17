@@ -20,7 +20,7 @@ Where:
 `python make_runit.py [-s] </path/to/taskfile> [-d </path/to/destination>] [-t <00:00:00>] [-N <# nodes>] [-c <# cores>] [-o <constraint>]`
 
 Where:
-* -s is the path to an existing taskfile
+* -f is the path to an existing taskfile
 * -d is the (optional) path to the destination folder for the runit (default same as taskfile)
 * -t is the time for the taskfarmer job (default 04:00:00)
 * -N is the number of nodes for the job to run on (must be at least 2, default 15)
@@ -46,7 +46,44 @@ INNER JOIN ls_dr9.photo_z AS phot_z ON trac.ls_id = phot_z.ls_id
 WHERE (q3c_radial_query(ra,dec, 150, 2, 5))
 AND NOT trac.type='PSF'
 ```
-* Changed the 1/NULLIF statements to just return the SNR for now
+* Changed the 1/NULLIF statements to just return the SNR
+
+### Query for Docker pipeline
+```
+bands = ['g', 'r', 'z', 'w1', 'w2']
+trac_cols = ['ls_id', 'ra', 'dec', 'type'] \
+            + ['dered_mag_'+b for b in bands] \
+            + ['dered_flux_'+b for b in bands] \
+            + ['snr_'+b for b in bands] \
+            + ['flux_ivar_'+b for b in bands] \
+            + ['dchisq_'+str(i) for i in range(1,6)] \
+            + ['rchisq_'+b for b in bands] \
+            + ['sersic', 'sersic_ivar'] \
+            + ['psfsize_g', 'psfsize_r', 'psfsize_z'] \
+            + ['shape_r', 'shape_e1', 'shape_e2'] \
+            + ['shape_r_ivar', 'shape_e1_ivar', 'shape_e2_ivar']
+phot_z_cols = ['z_phot_median', 'z_phot_std', 'z_spec']
+
+query_cols = ','.join(['trac.'+col for col in trac_cols])+','+','.join(['phot_z.'+col for col in phot_z_cols])
+
+query =["""SELECT """ + query_cols + """ FROM ls_dr9.tractor AS trac 
+    INNER JOIN ls_dr9.photo_z AS phot_z ON trac.ls_id = phot_z.ls_id 
+    WHERE (q3c_radial_query(ra,dec,{},{},{})) """,
+    """ ORDER BY q3c_dist({}, {}, trac.ra, trac.dec) ASC""",
+    """ LIMIT {}"""]
+```
+
+### Docker commands
+```
+# In folder with Dockerfile
+docker build -t eramey16/gradient:latest .
+docker push eramey16/gradient
+
+# On NERSC
+shifterimg -v pull docker:eramey16/gradient:latest
+```
 
 # Thanks to:
 * Peter Nugent
+* Ariel Goobar
+* 
