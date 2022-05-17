@@ -129,7 +129,7 @@ def filter_data(data):
     data['sum_rchisq'] = np.sum(rchisq, axis=1)
     
     # Calculate abs mag in r band
-    dm = 5*np.log10(300000*data.z_phot_median/70)+25
+    dm = 5\*np.log10(300000*data.z_phot_median/70)+25
     data['abs_mag_r'] = data.dered_mag_r - dm
     
     # Remove bad / duplicate entries

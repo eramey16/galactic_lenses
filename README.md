@@ -37,7 +37,34 @@ Where:
 * Edited classify.py to include extra columns
 * Combined all the lens galaxies in one single batch job
 
+In Europe:
+* Compared lensed and unlensed data (lensed data was still from dr8)
+* Filtering method:
+    * Add `min_dchisq`, `sum_rchisq`, colors, and flux uncertainties from `flux_ivar`s
+    * `abs_mag_r` = `dered_mag_r` - 5\*np.log10(300000\*`z_phot_median`/70)+25
+    * dered_mag_r <= 22
+    * type != DUP
+    * type != PSF
+    * Replace inf (-inf) with NaN and drop NaNs in filter columns
+    * Drop duplicate lsids
+* Cut down columns used in algorithm training to g-r, r-z, r-w1, r-w2 colors, abs_mag_r, and z_phot_median
+* (5/6/22) Trained a grid search random forest algorithm and saved it in `gridsearch_model.sav`
+* Went to first 2 days of ZTF meeting and took notes
 
+Back 5/16:
+* Switching to fluxes instead of magnitudes
+    * So colors will be in flux space not magnitude space
+    * abs_mag_r will not be used
+    * Otherwise same magnitude cuts
+* Data Augmentation
+    * Fluxes are randomly drawn from gaussians the width of their uncertainties (1/sqrt(`flux_ivar`) for each band)
+    * z_phot_median will be drawn from uncertainty distribution as well
+    * ls_ids will be randomized
+
+# Image files:
+* `rchisq_bands.png`: This plot shows contours of the unlensed and lensed galaxy distributions with the absolute r-band magnitude on the x-axis and log(`r_chisq`) in each band on the y-axis. The Ampel galaxies are scattered in black, and the IPTF16geu galaxy is shown as a red star.
+
+# Other Stuff:
 ### Query for (unlensed) training data
 ```
 SELECT trac.ls_id, trac.ra, trac.dec, trac.type, trac.dered_mag_g, trac.dered_mag_r, trac.dered_mag_z, trac.dered_mag_w1, trac.dered_mag_w2, trac.snr_g, trac.snr_r, trac.snr_z, trac.snr_w1, trac.snr_w2, phot_z.z_phot_median, phot_z.z_phot_std, phot_z.z_spec, trac.dered_flux_g, trac.dered_flux_r, trac.dered_flux_z, trac.dered_flux_w1, trac.dered_flux_w2, trac.dchisq_1, trac.dchisq_2, trac.dchisq_3, trac.dchisq_4, trac.dchisq_5, trac.rchisq_g, trac.rchisq_r, trac.rchisq_z, trac.rchisq_w1, trac.rchisq_w2, trac.psfsize_g, trac.psfsize_r, trac.psfsize_z, trac.sersic, trac.sersic_ivar, trac.shape_e1, trac.shape_e1_ivar, trac.shape_e2, trac.shape_e2_ivar, trac.shape_r, trac.shape_r_ivar
@@ -74,6 +101,7 @@ query =["""SELECT """ + query_cols + """ FROM ls_dr9.tractor AS trac
 ```
 
 ### Docker commands
+Docker stuff is on the Mac in the C3 center at LBL, in a folder labeled gradient
 ```
 # In folder with Dockerfile
 docker build -t eramey16/gradient:latest .
@@ -86,4 +114,3 @@ shifterimg -v pull docker:eramey16/gradient:latest
 # Thanks to:
 * Peter Nugent
 * Ariel Goobar
-* 
