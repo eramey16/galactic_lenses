@@ -7,6 +7,8 @@ import numpy as np
 import glob
 import os
 import sys
+import h5py
+import prospect.io.read_results as reader
 
 # Old columns
 cols_old = ["ls_id", "ra", "dec","type",
@@ -50,11 +52,31 @@ cols_new = trac_cols+phot_z_cols
 
 
 bands = ['g', 'r', 'z', 'w1', 'w2']
-use_cols = ['dered_mag_g', 'dered_mag_r', 'dered_mag_z', 'dered_mag_w1', 'dered_mag_w2', 
-            'z_phot_median', 'min_dchisq']
+use_cols = ['dered_flux_'+b for b in bands] + ['g/r', 'r/z', 'r/w1', 'r/w2'] + ['z_phot_median', 'min_dchisq']
 filter_cols = use_cols+['unc_'+b for b in bands]+['flux_ivar_'+b for b in bands]+['ls_id', 'ra', 'dec', 'type']
 dchisq_labels = [f'dchisq_{i}' for i in range(1,6)]
 rchisq_labels = ['rchisq_g', 'rchisq_r', 'rchisq_z', 'rchisq_w1', 'rchisq_w2']
+
+res_cols = []
+obs_cols = []
+model_cols = [
+    'zred',
+    'mass',
+    'logzsol',
+    'sfh',
+    'tage',
+    'imf_type',
+    'dust_type',
+    'pmetals',
+    'dust1',
+    'dust_index',
+    'gas_logz',
+    'gas_logu',
+    'dust2',
+    'tau',
+    'massmet',
+    'logtmax'
+]
 
 def collect_lensed(path):
     """ Collects lensed galaxies in one CSV """
@@ -107,13 +129,83 @@ def collect_gals(path):
     # Return result
     return data
 
+def collect_h5(path):
+    """ Collects h5 data into a large file """
+    # Get all paths for filenames
+    key = os.path.join(path, '[0-9]*.h5')
+    filenames = glob.glob(key)
+    
+    # Append to master file
+    outfile = os.path.join(path, 'all_data.h5')
+    all_data = h5py.File(outfile, 'a')
+    
+    # Load data
+    for file in filenames:
+        # Get ls_id from file path
+        ls_id = file.split('/')[-1][:-3]
+        # Make new group for galaxy
+        new_group = all_data.create_group(ls_id)
+        
+        # # Read file
+        # f = h5py.File(file, 'r')
+        # # Copy groups
+        # for group in ['bestfit', 'obs', 'sampling']:
+        #     f.copy(group, new_group)
+        load_prospect_data(new_group, file)
+        
+        # # Remove old h5 files
+        # f.close()
+        # os.remove(file)
+    
+    # Close new file
+    all_data.close()
+
+def load_prospect_data(new_group, old_file):
+    """ 
+    Adds prospector data from old_file as HDF5 dataset objects into new_group
+    new_group : group in aggregate HDF5 file
+    old_file : string file path
+    """
+    # Read results from new file
+    res, obs, model = reader.results_from(old_file)
+    bf = res['bestfit']
+    params = model.params
+    
+    # Get maggies and bestfit photometry
+    new_group.create_dataset("maggies", data=obs['maggies'])
+    new_group.create_dataset("maggies_unc", data=obs['maggies_unc'])
+    new_group.create_dataset("maggies_fit", data=bf['photometry'])
+    
+    # Get chi^2 between maggies and fit
+    chisq = np.sum((bf['photometry'] - obs['maggies'])**2 / obs['maggies'])
+    new_group.create_dataset("chi2_maggies", data=chisq)
+    
+    # Likelihood chain
+    N = int(0.2*res['chain'].shape[0]) # last 20%
+    means = np.mean(res['chain'][-N:, :], axis=0)
+    stds = np.std(res['chain'][-N:, :], axis=0)
+    
+    # Add thetas to group
+    new_group.create_dataset("theta_mean", data=means)
+    new_group.create_dataset("theta_std", data=stds)
+    new_group.create_dataset("theta_labels", data=res['theta_labels'])
+    
+    # Add initial model parameters
+    for col in model_cols:
+        new_group.create_dataset(col, data=params[col])
+    new_group.create_dataset('theta_init', data=model.theta)
+
 def filter_data(data):
     
     # Colors
-    data['g-r'] = data['dered_mag_g']-data['dered_mag_r']
-    data['r-z'] = data['dered_mag_r']-data['dered_mag_z']
-    data['r-w1'] = data['dered_mag_r']-data['dered_mag_w1']
-    data['r-w2'] = data['dered_mag_r']-data['dered_mag_w2']
+    # data['g-r'] = data['dered_mag_g']-data['dered_mag_r']
+    # data['r-z'] = data['dered_mag_r']-data['dered_mag_z']
+    # data['r-w1'] = data['dered_mag_r']-data['dered_mag_w1']
+    # data['r-w2'] = data['dered_mag_r']-data['dered_mag_w2']
+    data['g/r'] = data['dered_flux_g']/data['dered_flux_r']
+    data['r/z'] = data['dered_flux_r']/data['dered_flux_z']
+    data['r/w1'] = data['dered_flux_r']/data['dered_flux_w1']
+    data['r/w2'] = data['dered_flux_r']/data['dered_flux_w2']
     
     # Uncertainties
     for b in bands:
@@ -129,7 +221,7 @@ def filter_data(data):
     data['sum_rchisq'] = np.sum(rchisq, axis=1)
     
     # Calculate abs mag in r band
-    dm = 5\*np.log10(300000*data.z_phot_median/70)+25
+    dm = 5*np.log10(300000*data.z_phot_median/70)+25
     data['abs_mag_r'] = data.dered_mag_r - dm
     
     # Remove bad / duplicate entries
@@ -142,7 +234,7 @@ def filter_data(data):
     
     return data
 
-def merge_gals(path):
+def collect_all(path, lim=np.inf):
     """ Merges output files into one CSV """
     # Get both data tables
     gals = collect_gals(path)
