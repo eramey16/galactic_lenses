@@ -50,7 +50,18 @@ phot_z_cols = ['z_phot_median', 'z_phot_std', 'z_spec']
 
 cols_new = trac_cols+phot_z_cols
 
+theta_labels = ['dust2', 'tau', 'massmet_1', 'massmet_2', 'logtmax']
 
+# Column labels for h5 files
+h5_cols = ['ls_id'] + \
+        [f'maggies_{i}' for i in range(5)] + \
+        [f'maggies_unc_{i}' for i in range(5)] + \
+        [f'maggies_fit_{i}' for i in range(5)] + \
+        [f'{theta}_mean' for theta in theta_labels] + \
+        [f'{theta}_std' for theta in theta_labels] + \
+        ['chisq_maggies']
+
+# Columns to use
 bands = ['g', 'r', 'z', 'w1', 'w2']
 use_cols = ['dered_flux_'+b for b in bands] + ['g/r', 'r/z', 'r/w1', 'r/w2'] + ['z_phot_median', 'min_dchisq']
 filter_cols = use_cols+['unc_'+b for b in bands]+['flux_ivar_'+b for b in bands]+['ls_id', 'ra', 'dec', 'type']
@@ -136,64 +147,91 @@ def collect_h5(path):
     filenames = glob.glob(key)
     
     # Append to master file
-    outfile = os.path.join(path, 'all_data.h5')
-    all_data = h5py.File(outfile, 'a')
+    model_file = os.path.join(path, 'model_data.h5')
+    model_data = h5py.File(model_file, 'w')
+    
+    # Create empty dataframe
+    all_data = pd.DataFrame(index=range(len(filenames)), columns=h5_cols)
     
     # Load data
-    for file in filenames:
+    for i,file in enumerate(filenames):
         # Get ls_id from file path
         ls_id = file.split('/')[-1][:-3]
-        # Make new group for galaxy
-        new_group = all_data.create_group(ls_id)
         
-        # # Read file
-        # f = h5py.File(file, 'r')
-        # # Copy groups
-        # for group in ['bestfit', 'obs', 'sampling']:
-        #     f.copy(group, new_group)
-        load_prospect_data(new_group, file)
+        # Read from file
+        data = reader.results_from(file)
         
-        # # Remove old h5 files
-        # f.close()
-        # os.remove(file)
+        # Save model info in an h5 file 
+        if i==0:
+            # Add initial model parameters
+            params = data[2].params
+            for col in model_cols:
+                model_data.create_dataset(col, data=params[col])
+            model_data.create_dataset('theta', data=data[2].theta)
+            model_data.close()
+        
+        # Save results in a csv
+        load_data(all_data, data, ls_id, i)
     
-    # Close new file
-    all_data.close()
+    # Save output file
+    outfile = os.path.join(path, "all_data.csv")
+    all_data.to_csv(outfile, index=False)
 
-def load_prospect_data(new_group, old_file):
-    """ 
-    Adds prospector data from old_file as HDF5 dataset objects into new_group
-    new_group : group in aggregate HDF5 file
-    old_file : string file path
-    """
-    # Read results from new file
-    res, obs, model = reader.results_from(old_file)
+def load_data(df, gal_results, ls_id, idx):
+    """ Loads data from H5 prospector results into new dataframe """
+    # Separate data structures
+    res, obs, model = gal_results
     bf = res['bestfit']
-    params = model.params
     
-    # Get maggies and bestfit photometry
-    new_group.create_dataset("maggies", data=obs['maggies'])
-    new_group.create_dataset("maggies_unc", data=obs['maggies_unc'])
-    new_group.create_dataset("maggies_fit", data=bf['photometry'])
-    
+    # Calculate secondary results
     # Get chi^2 between maggies and fit
     chisq = np.sum((bf['photometry'] - obs['maggies'])**2 / obs['maggies'])
-    new_group.create_dataset("chi2_maggies", data=chisq)
     
     # Likelihood chain
     N = int(0.2*res['chain'].shape[0]) # last 20%
     means = np.mean(res['chain'][-N:, :], axis=0)
     stds = np.std(res['chain'][-N:, :], axis=0)
     
-    # Add thetas to group
-    new_group.create_dataset("theta_mean", data=means)
-    new_group.create_dataset("theta_std", data=stds)
-    new_group.create_dataset("theta_labels", data=res['theta_labels'])
+    # Set up data structure to load into df
+    row = [ls_id] + \
+        list(obs['maggies']) + \
+        list(obs['maggies_unc']) + \
+        list(bf['photometry']) + \
+        list(means) + list(stds) + \
+        [chisq]
     
-    # Add initial model parameters
-    for col in model_cols:
-        new_group.create_dataset(col, data=params[col])
-    new_group.create_dataset('theta_init', data=model.theta)
+    # Load into dataframe
+    df.iloc[idx] = row
+    
+# def load_group(new_group, gal_results):
+#     """ 
+#     Adds prospector data from gal_results as HDF5 dataset objects into new_group
+#     new_group : group in aggregate HDF5 file
+#     gal_results : results from prospector's reader
+#     """
+#     # Read results from new file
+#     res, obs, model = gal_results
+#     bf = res['bestfit']
+    
+#     # Get maggies and bestfit photometry
+#     new_group.create_dataset("maggies", data=obs['maggies'])
+#     new_group.create_dataset("maggies_unc", data=obs['maggies_unc'])
+#     new_group.create_dataset("maggies_fit", data=bf['photometry'])
+    
+#     # Get chi^2 between maggies and fit
+#     chisq = np.sum((bf['photometry'] - obs['maggies'])**2 / obs['maggies'])
+#     new_group.create_dataset("chi2_maggies", data=chisq)
+    
+#     # Likelihood chain
+#     N = int(0.2*res['chain'].shape[0]) # last 20%
+#     means = np.mean(res['chain'][-N:, :], axis=0)
+#     stds = np.std(res['chain'][-N:, :], axis=0)
+    
+#     # Add thetas to group
+#     new_group.create_dataset("theta_mean", data=means)
+#     new_group.create_dataset("theta_std", data=stds)
+#     new_group.create_dataset("theta_labels", data=res['theta_labels'])
+    
 
 def filter_data(data):
     
@@ -238,7 +276,7 @@ def collect_all(path, lim=np.inf):
     """ Merges output files into one CSV """
     # Get both data tables
     gals = collect_gals(path)
-    lensed = collect_lensed(path)
+    # lensed = collect_lensed(path)
     
     # Merge dataframes
     
