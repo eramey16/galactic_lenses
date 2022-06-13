@@ -8,6 +8,10 @@ import glob
 import os
 import sys
 import h5py
+import psycopg2
+import corner
+from sqlalchemy import create_engine
+from sqlalchemy.types import BIGINT, FLOAT, REAL, VARCHAR
 import prospect.io.read_results as reader
 
 # Old columns
@@ -57,14 +61,18 @@ h5_cols = ['ls_id'] + \
         [f'maggies_{i}' for i in range(5)] + \
         [f'maggies_unc_{i}' for i in range(5)] + \
         [f'maggies_fit_{i}' for i in range(5)] + \
-        [f'{theta}_mean' for theta in theta_labels] + \
-        [f'{theta}_std' for theta in theta_labels] + \
+        [f'{theta}_med' for theta in theta_labels] + \
+        [f'{theta}_sig_minus' for theta in theta_labels] + \
+        [f'{theta}_sig_plus' for theta in theta_labels] + \
         ['chisq_maggies']
 
-# Columns to use
+# Setup for columns
 bands = ['g', 'r', 'z', 'w1', 'w2']
+
+# Columns to use
 use_cols = ['dered_flux_'+b for b in bands] + ['g/r', 'r/z', 'r/w1', 'r/w2'] + ['z_phot_median', 'min_dchisq']
-filter_cols = use_cols+['unc_'+b for b in bands]+['flux_ivar_'+b for b in bands]+['ls_id', 'ra', 'dec', 'type']
+# Columns to filter on
+filter_cols = use_cols+['flux_ivar_'+b for b in bands]+['ls_id', 'ra', 'dec', 'type']
 dchisq_labels = [f'dchisq_{i}' for i in range(1,6)]
 rchisq_labels = ['rchisq_g', 'rchisq_r', 'rchisq_z', 'rchisq_w1', 'rchisq_w2']
 
@@ -89,7 +97,21 @@ model_cols = [
     'logtmax'
 ]
 
-def collect_lensed(path):
+# Get database columns from file columns
+db_cols = {
+    'ls_id': BIGINT,
+    'ra': FLOAT,
+    'dec': FLOAT,
+    'type': VARCHAR(4),
+}
+db_cols.update({col: FLOAT for col in cols_new[4:]+h5_cols[1:]})
+# print(db_cols)
+
+# Connection to database
+# conn_string = 'host = nerscdb03.nersc.gov dbname=lensed_db user=lensed_db_admin'
+conn_string = 'postgresql+psycopg2://lensed_db_admin@nerscdb03.nersc.gov/lensed_db'
+
+def collect_lensed(path, lim=None):
     """ Collects lensed galaxies in one CSV """
     # Get generic path for filenames
     key = os.path.join(path, '[0-9]*.csv')
@@ -111,40 +133,44 @@ def collect_lensed(path):
     
     return data
 
-def collect_gals(path):
+def collect_gals(path, lim=None):
     """ Collects galaxy data into a CSV """
+    if not os.path.exists(path):
+        raise ValueError("Incorrect path.")
     # Get generic path for filenames
-    key = os.path.join(path, 'galaxies_*.csv')
+    key = os.path.join(path, '[0-9]*.csv')
     filenames = glob.glob(key)
+    
+    # Check for limit
+    if lim and lim<len(filenames):
+        filenames = filenames[:lim]
     
     # Load into list
     data = []
     for file in filenames:
-        df = pd.read_csv(file, index_col=0, header=None)
-        df.columns = np.arange(len(df.columns))
-        data.append(df)
+        try:
+            df = pd.read_csv(file)
+            data.append(df)
+        except:
+            print(f"File {file} did not parse correctly.")
     
     # Concatenate data
     data = pd.concat(data, ignore_index=True)
     
-    # Fix columns
-    if len(data.columns)==len(cols_old):
-        data.columns = cols_old
-    elif len(data.columns)==len(cols_middle):
-        data.columns = cols_middle
-    elif len(data.columns)==len(cols_new):
-        data.columns = cols_new
-    else:
-        raise ValueError("The given csv files do not match a known column scheme.")
-    
     # Return result
     return data
 
-def collect_h5(path):
+def collect_h5(path, lim=None):
     """ Collects h5 data into a large file """
+    if not os.path.exists(path):
+        raise ValueError("Incorrect path.")
     # Get all paths for filenames
     key = os.path.join(path, '[0-9]*.h5')
     filenames = glob.glob(key)
+    
+    # Check for limit
+    if lim and lim<len(filenames):
+        filenames = filenames[:lim]
     
     # Append to master file
     model_file = os.path.join(path, 'model_data.h5')
@@ -155,11 +181,19 @@ def collect_h5(path):
     
     # Load data
     for i,file in enumerate(filenames):
-        # Get ls_id from file path
-        ls_id = file.split('/')[-1][:-3]
-        
-        # Read from file
-        data = reader.results_from(file)
+        try:
+            # Get ls_id from file path
+            ls_id = file.split('/')[-1][:-3]
+
+            # Read from file
+            data = reader.results_from(file)
+            
+            # Save results in dataframe
+            row = load_data(data)
+            all_data.iloc[i] = [ls_id]+row
+        except:
+            print(f"Failed to process {file}")
+            continue
         
         # Save model info in an h5 file 
         if i==0:
@@ -169,69 +203,42 @@ def collect_h5(path):
                 model_data.create_dataset(col, data=params[col])
             model_data.create_dataset('theta', data=data[2].theta)
             model_data.close()
-        
-        # Save results in a csv
-        load_data(all_data, data, ls_id, i)
     
-    # Save output file
-    outfile = os.path.join(path, "all_data.csv")
-    all_data.to_csv(outfile, index=False)
+    # Output
+    return all_data
 
-def load_data(df, gal_results, ls_id, idx):
+def load_data(gal_results):
     """ Loads data from H5 prospector results into new dataframe """
     # Separate data structures
     res, obs, model = gal_results
     bf = res['bestfit']
     
     # Calculate secondary results
-    # Get chi^2 between maggies and fit
-    chisq = np.sum((bf['photometry'] - obs['maggies'])**2 / obs['maggies'])
+    # Get reduced chi^2 between maggies and fit
+    red_chisq = np.sum((bf['photometry'] - obs['maggies'])**2 / obs['maggies_unc']**2) / (len(bf['photometry'])-1)
     
-    # Likelihood chain
-    N = int(0.2*res['chain'].shape[0]) # last 20%
-    means = np.mean(res['chain'][-N:, :], axis=0)
-    stds = np.std(res['chain'][-N:, :], axis=0)
+    # Define function for quantiles (0.16, 0.5, 0.84)
+    def calc_quantiles(x):
+        """ Calculates .16, .5, and .84 quantiles on slice x """
+        return corner.quantile(x, q=[.16, .5, .84], weights=res['weights'])
+    
+    # Get quantiles & calc lower and upper sigmas
+    quantiles = np.apply_along_axis(calc_quantiles, 0, res['chain'])
+    mid = quantiles[1,:]
+    sig_minus = mid-quantiles[0,:]
+    sig_plus = quantiles[2,:]-mid
     
     # Set up data structure to load into df
-    row = [ls_id] + \
-        list(obs['maggies']) + \
+    row = list(obs['maggies']) + \
         list(obs['maggies_unc']) + \
         list(bf['photometry']) + \
-        list(means) + list(stds) + \
-        [chisq]
+        list(mid) + \
+        list(sig_minus) + \
+        list(sig_plus) + \
+        [red_chisq]
     
     # Load into dataframe
-    df.iloc[idx] = row
-    
-# def load_group(new_group, gal_results):
-#     """ 
-#     Adds prospector data from gal_results as HDF5 dataset objects into new_group
-#     new_group : group in aggregate HDF5 file
-#     gal_results : results from prospector's reader
-#     """
-#     # Read results from new file
-#     res, obs, model = gal_results
-#     bf = res['bestfit']
-    
-#     # Get maggies and bestfit photometry
-#     new_group.create_dataset("maggies", data=obs['maggies'])
-#     new_group.create_dataset("maggies_unc", data=obs['maggies_unc'])
-#     new_group.create_dataset("maggies_fit", data=bf['photometry'])
-    
-#     # Get chi^2 between maggies and fit
-#     chisq = np.sum((bf['photometry'] - obs['maggies'])**2 / obs['maggies'])
-#     new_group.create_dataset("chi2_maggies", data=chisq)
-    
-#     # Likelihood chain
-#     N = int(0.2*res['chain'].shape[0]) # last 20%
-#     means = np.mean(res['chain'][-N:, :], axis=0)
-#     stds = np.std(res['chain'][-N:, :], axis=0)
-    
-#     # Add thetas to group
-#     new_group.create_dataset("theta_mean", data=means)
-#     new_group.create_dataset("theta_std", data=stds)
-#     new_group.create_dataset("theta_labels", data=res['theta_labels'])
-    
+    return row
 
 def filter_data(data):
     
@@ -247,7 +254,7 @@ def filter_data(data):
     
     # Uncertainties
     for b in bands:
-        data['unc_'+b] = 1 / data['snr_'+b]
+        # data['unc_'+b] = 1 / data['snr_'+b]
         data['flux_sigma_'+b] = 1 / np.sqrt(data['flux_ivar_'+b])
     
     # Calculate minimum dchisq
@@ -272,11 +279,83 @@ def filter_data(data):
     
     return data
 
-def collect_all(path, lim=np.inf):
+def collect_all(path, db_name=None, lim=None):
     """ Merges output files into one CSV """
     # Get both data tables
-    gals = collect_gals(path)
+    basic = collect_gals(path, lim)
     # lensed = collect_lensed(path)
+    prospector = collect_h5(path, lim)
+    prospector['ls_id'] = prospector.ls_id.astype(int) # Fix dtype
     
     # Merge dataframes
+    all_data = basic.merge(prospector, on='ls_id')
+    
+    if db_name: # Save in database
+        # Assign other column types
+        # db_cols.update({col: REAL for col in list(all_data.columns)[4:]})
+        
+        # Connect to database
+        engine = create_engine(conn_string)
+        all_data.to_sql(db_name, engine, if_exists='append', dtype=db_cols, index=False)
+        
+        # Add primary key
+        try:
+            with engine.connect() as conn:
+                conn.execute(f'ALTER TABLE {db_name} ADD PRIMARY KEY (ls_id);')
+        except:
+            raise ValueError("Could not add primary key")
+    else:
+        return all_data
+
+def save_to_db(path, db_name, lim=None, delete=False):
+    """ Saves a prospector folder's contents to a database """
+    # Get filenames in folder
+    key = os.path.join(path, '[0-9]*.h5')
+    h5_files = glob.glob(key)
+    
+    # Check for limit
+    if lim and lim<len(h5_files):
+        h5_files = h5_files[:lim]
+    
+    # Connect to database
+    engine = create_engine(conn_string) # TODO: init database here
+    
+    # Loop through filenames
+    for h5_file in h5_files:
+        # Get ls id and prospector file
+        ls_id = h5_file.split('/')[-1][:-3]
+        basic_file = os.path.join(path, f"{ls_id}.csv")
+        
+        try:
+            # Read in basic data
+            df = pd.read_csv(basic_file)
+            # Add new columns
+            df[h5_cols[1:]] = None
+
+            # Read in h5 data
+            h5_data = reader.results_from(h5_file)
+            # Get results
+            h5_row = load_data(h5_data)
+        except:
+            continue
+        
+        # Put in dataframe
+        df.loc[0, h5_cols[1:]] = h5_row
+        
+        # Save to database
+        df.to_sql(db_name, engine, if_exists='append', dtype=db_cols, index=False)
+        
+        # Delete files
+        if delete:
+            os.remove(h5_file)
+            os.remove(basic_file)
+
+def read_table(db_name):
+    """ Reads a pandas table in from a database """
+    
+    engine = create_engine(conn_string)
+    
+    data = pd.read_sql(f"SELECT * from {db_name}", engine)
+    
+    return data
     

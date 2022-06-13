@@ -5,20 +5,23 @@
 ### Imports
 import pandas as pd
 import numpy as np
+from util import filter_data
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.model_selection import RepeatedStratifiedKFold, GridSearchCV
 # from sklearn.impute import SimpleImputer
 from sklearn.metrics import accuracy_score, confusion_matrix, roc_auc_score
 import pickle
+import util
 
 ### Files and variables
 lens_file = "../data/dr9_training/dr9_lensed.csv"
 unlens_file = "../data/dr9_training/dr9_unlensed.csv"
-save_file = "gridsearch_model.sav"
+save_file = "gridsearch_model_fluxes.sav"
+
 bands = ['g', 'r', 'z', 'w1', 'w2']
-use_cols = ['g-r', 'r-z', 'r-w1', 'r-w2', 'abs_mag_r', 'z_phot_median']
-use_cols.extend([f"rchisq_{band}" for band in bands])
+theta_labels = ['dust2', 'tau', 'massmet_1', 'massmet_2', 'logtmax']
+use_cols = ['g/r', 'r/z', 'r/w1', 'r/w2', 'z_phot_median', 'chisq_maggies']+[f"rchisq_{band}" for band in bands]+theta_labels
 seed = 42
 
 ### Parameters for Grid Search
@@ -35,8 +38,12 @@ parameters = {
 ### Main function
 if __name__ == '__main__':
     # Read in data
-    lensed = pd.read_csv(lens_file)
-    unlensed = pd.read_csv(unlens_file)
+    lensed = util.read_table("lensed_augmented")
+    unlensed = util.read_table("unlensed")
+    
+    # Filter
+    lensed = filter_data(lensed)
+    unlensed = filter_data(unlensed)
     
     # Concatenate lensed and unlensed data, mix up
     all_data = pd.concat([lensed, unlensed])

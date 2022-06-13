@@ -8,8 +8,9 @@ import os
 import sys
 
 runit_file = "runit_template"
+task_filename = ["tasks", ".txt"]
 
-def make_runit(dest, time, nodes, cores, const, taskfile):
+def make_runit(dest, time, nodes, cores, const, taskfile, tag=''):
     """ Makes a runit file from a template """
     # Load template file
     with open(runit_file, 'r') as file:
@@ -19,7 +20,7 @@ def make_runit(dest, time, nodes, cores, const, taskfile):
     runit_text = runit_text.format(dest, time, nodes, cores, const, dest, taskfile)
     
     # Save resulting runit file
-    filename = os.path.join(dest, 'runit')
+    filename = os.path.join(dest, 'runit'+tag)
     with open(filename, 'w') as file:
         file.write(runit_text)
         print(f"File created: {filename}")
@@ -33,11 +34,21 @@ if __name__=='__main__':
     parser.add_argument("-N", "--nodes", type=str, default='15', help = "Number of nodes (>=2)")
     parser.add_argument("-c", "--cores", type=str, default='32', help = "Number of cores")
     parser.add_argument("-o", "--constraint", type=str, choices=['knl', 'haswell'], default = 'knl', help = "System constraint")
+    parser.add_argument("-b", "--batch", nargs='?', type=int, help = "Number of batches")
+    parser.add_argument('--tag', nargs='?', type=str, default='', help='Tag for runit file')
     args = parser.parse_args()
     
     # Check arguments
     if args.dest is None:
         args.dest = os.path.dirname(args.taskfile)
     
-    # Make new runit file
-    make_runit(args.dest, args.time, args.nodes, args.cores, args.constraint, args.taskfile)
+    # Make several runits
+    if args.batch:
+        task_filename.insert(-1, '_0')
+        for i in range(args.batch):
+            task_filename[-2] = f'_{i}' + ("_" if args.tag else "")
+            taskfile = ''.join(task_filename)
+            make_runit(args.dest, args.time, args.nodes, args.cores, args.constraint, 
+                       ''.join(task_filename), tag=str(i))
+    else: # Make one runit
+        make_runit(args.dest, args.time, args.nodes, args.cores, args.constraint, args.taskfile, tag=args.tag)

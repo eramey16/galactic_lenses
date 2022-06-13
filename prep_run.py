@@ -56,11 +56,13 @@ def fill_tasks(file, dest, rd):
 if __name__=='__main__':
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Create a task file from a table of galaxy coordinates")
-    parser.add_argument("-m", "--masterlens", action='store_true', help = "Indicates original file is a TSV from the masterlens database")
-    parser.add_argument("-f", "--file", type=str, help = "Source file for target galaxies (must include RA and DEC)")
-    parser.add_argument("-d", "--dest", nargs='?', type=str, help = "Destination folder for generated lens files")
-    parser.add_argument("-t", "--tag", nargs='?', type=str, default = '', help = "Tag for destination files")
-    parser.add_argument("-rd", "--radius", nargs='?', type=str, default='.000277778', help="Search radius (in degrees)")
+    parser.add_argument("-m", "--masterlens", action='store_true', 
+                        help = "Indicates original file is a TSV from the masterlens database.")
+    parser.add_argument("-f", "--file", type=str, help = "Source file for target galaxies (must include RA and DEC).")
+    parser.add_argument("-d", "--dest", nargs='?', type=str, help = "Destination folder for generated lens files.")
+    parser.add_argument("-t", "--tag", nargs='?', type=str, default = '', help = "Tag for destination files.")
+    parser.add_argument("-rd", "--radius", nargs='?', type=str, default='.000277778', help="Search radius (in degrees).")
+    parser.add_argument("-b", "--batch", nargs='?', type=int, help = "Number of batches")
     args = parser.parse_args()
     
     # Check arguments
@@ -72,7 +74,7 @@ if __name__=='__main__':
     
     # Check source file and destination folder
     if not os.path.isfile(args.file):
-        print(f"Source file is incorrect: {args.file}")
+        print(f"Source file does not exist: {args.file}")
         sys.exit(1)
     if not os.path.isdir(args.dest):
         print(f"Destination folder does not exist or is not a directory: {args.dest}")
@@ -93,10 +95,31 @@ if __name__=='__main__':
     # Fill tasks from ra, dec in file
     tasks = fill_tasks(args.file, args.dest, args.radius)
     
-    # Save to destination (tasks.txt)
-    filename = ''.join(dest_filename)
-    dest = os.path.join(args.dest, filename)
-    tasks.to_csv(dest, sep='\t', header=False, index=False, quoting=3)
+    # Save in batches
+    if args.batch:
+        dest_filename.insert(-1, '_0')
+        N = len(tasks)
+        start = 0
+        # Loop through batches
+        for i in range(args.batch):
+            # Get limits
+            end = int((i+1) / args.batch * N)
+            
+            # Get dest filename
+            dest_filename[-2] = f'_{i}'
+            dest = os.path.join(args.dest, ''.join(dest_filename))
+            
+            # Save batch to file
+            tasks.iloc[start:end].to_csv(dest, sep='\t', header=False, index=False, quoting=3)
+            print(f"File created: {dest}")
+            
+            # Reset start
+            start = end
+    else:
+        # Save to destination (tasks.txt)
+        filename = ''.join(dest_filename)
+        dest = os.path.join(args.dest, filename)
+        tasks.to_csv(dest, sep='\t', header=False, index=False, quoting=3)
     
-    print(f"File created: {dest}")
+        print(f"File created: {dest}")
     
