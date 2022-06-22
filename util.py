@@ -10,7 +10,7 @@ import sys
 import h5py
 import psycopg2
 import corner
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, Column, Table, MetaData
 from sqlalchemy.types import BIGINT, FLOAT, REAL, VARCHAR
 import prospect.io.read_results as reader
 
@@ -98,14 +98,14 @@ model_cols = [
 ]
 
 # Get database columns from file columns
-db_cols = {
-    'ls_id': BIGINT,
-    'ra': FLOAT,
-    'dec': FLOAT,
-    'type': VARCHAR(4),
-}
-db_cols.update({col: FLOAT for col in cols_new[4:]+h5_cols[1:]})
-# print(db_cols)
+db_cols = [
+    Column('ls_id', BIGINT, nullable=False),
+    Column('ra', FLOAT),
+    Column('dec', FLOAT),
+    Column('type', VARCHAR(4)),
+    *[Column(col, FLOAT) for col in cols_new[4:]+h5_cols[1:]], # All other cols
+    Column('id', BIGINT, primary_key=True, autoincrement=True)
+]
 
 # Connection to database
 # conn_string = 'host = nerscdb03.nersc.gov dbname=lensed_db user=lensed_db_admin'
@@ -296,16 +296,31 @@ def collect_all(path, db_name=None, lim=None):
         
         # Connect to database
         engine = create_engine(conn_string)
-        all_data.to_sql(db_name, engine, if_exists='append', dtype=db_cols, index=False)
+        all_data.to_sql(db_name, engine, if_exists='append', index=False)
         
-        # Add primary key
-        try:
-            with engine.connect() as conn:
-                conn.execute(f'ALTER TABLE {db_name} ADD PRIMARY KEY (ls_id);')
-        except:
-            raise ValueError("Could not add primary key")
+        # # Add primary key
+        # try:
+        #     with engine.connect() as conn:
+        #         conn.execute(f'ALTER TABLE {db_name} ADD PRIMARY KEY (ls_id);')
+        # except:
+        #     raise ValueError("Could not add primary key")
     else:
         return all_data
+
+def setup_table(table_name):
+    """ Sets up a new database table if one does not exist """
+    # Metadata objects
+    meta = MetaData()
+    engine = create_engine(conn_string)
+    
+    # Table columns
+    tbl = Table(
+       table_name, meta, 
+       *db_cols
+    )
+    
+    # Create table
+    meta.create_all(engine)
 
 def save_to_db(path, db_name, lim=None, delete=False):
     """ Saves a prospector folder's contents to a database """
@@ -318,7 +333,12 @@ def save_to_db(path, db_name, lim=None, delete=False):
         h5_files = h5_files[:lim]
     
     # Connect to database
-    engine = create_engine(conn_string) # TODO: init database here
+    engine = create_engine(conn_string)
+    
+    # Make new table if one doesn't exist
+    with engine.connect() as conn:
+        if not engine.dialect.has_table(conn, db_name):
+            setup_table(db_name)
     
     # Loop through filenames
     for h5_file in h5_files:
@@ -342,8 +362,12 @@ def save_to_db(path, db_name, lim=None, delete=False):
         # Put in dataframe
         df.loc[0, h5_cols[1:]] = h5_row
         
+        # Only allowed columns
+        cols = [col.name for col in db_cols if col.name!='id']
+        df = df[cols]
+        
         # Save to database
-        df.to_sql(db_name, engine, if_exists='append', dtype=db_cols, index=False)
+        df.to_sql(db_name, engine, if_exists='append', index=False)
         
         # Delete files
         if delete:

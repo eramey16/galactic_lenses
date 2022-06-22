@@ -21,7 +21,7 @@ def make_runit(dest, time, nodes, cores, const, taskfile, tag=''):
     
     # Save resulting runit file
     filename = os.path.join(dest, 'runit'+tag)
-    with open(filename, 'w') as file:
+    with open(filename, 'w+') as file:
         file.write(runit_text)
         print(f"File created: {filename}")
 
