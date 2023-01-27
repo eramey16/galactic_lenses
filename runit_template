@@ -1,9 +1,9 @@
 #!/bin/bash
+#SBATCH -A m2218
 #SBATCH --image=eramey16/gradient:latest --volume="{}:/gradient_boosted/exports"
 #SBATCH --qos=regular
 #SBATCH --time={}
-#SBATCH  -N {} -c {}
-#SBATCH --constraint={}
+#SBATCH -N {} -c {}
 #SBATCH --licenses=cfs,SCRATCH
 
 cd {}
