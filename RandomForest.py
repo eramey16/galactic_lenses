@@ -5,7 +5,7 @@
 ### Imports
 import pandas as pd
 import numpy as np
-from util import filter_data
+from util import clean_and_calc
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.model_selection import RepeatedStratifiedKFold, GridSearchCV
@@ -13,15 +13,20 @@ from sklearn.model_selection import RepeatedStratifiedKFold, GridSearchCV
 from sklearn.metrics import accuracy_score, confusion_matrix, roc_auc_score
 import pickle
 import util
+import sys
+from datetime import date
 
 ### Files and variables
 lens_file = "../data/dr9_training/dr9_lensed.csv"
 unlens_file = "../data/dr9_training/dr9_unlensed.csv"
-save_file = "gridsearch_model_fluxes.sav"
+save_file = f"gridsearch_{date.today().isoformat()}.sav"
 
 bands = ['g', 'r', 'z', 'w1', 'w2']
 theta_labels = ['dust2', 'tau', 'massmet_1', 'massmet_2', 'logtmax']
-use_cols = ['g/r', 'r/z', 'r/w1', 'r/w2', 'z_phot_median', 'chisq_maggies']+[f"rchisq_{band}" for band in bands]+theta_labels
+use_cols = ['g/r', 'r/z', 'r/w1', 'r/w2', 'z_phot_median', 'chisq_maggies'] \
+    + [f"rchisq_{band}" for band in bands] \
+    + [theta+"_med" for theta in theta_labels] \
+    + [theta+"_sig_diff" for theta in theta_labels]
 seed = 42
 
 ### Parameters for Grid Search
@@ -30,9 +35,9 @@ parameters = {
     'max_depth': np.arange(3, 21, 2),
     'max_samples': np.arange(0.7, 1.1, .1),
     'criterion': ('gini', 'entropy'),
-    'max_features': ('auto', None),
+    'max_features': ('sqrt', 'log2'),
     'random_state': [seed],
-    'class_weight': ['balanced'],
+    'class_weight': [{True:1, False:10}, {True:1, False:25}, {True:1, False:50}],
 }
 
 ### Main function
@@ -40,10 +45,17 @@ if __name__ == '__main__':
     # Read in data
     lensed = util.read_table("lensed_augmented")
     unlensed = util.read_table("unlensed")
+    print(f"Data set:\n Lensed: {len(lensed)}\n Unlensed: {len(unlensed)}")
+    
+    # Set lensed and unlensed status (just in case)
+    lensed['lensed'] = True
+    unlensed['lensed'] = False
     
     # Filter
-    lensed = filter_data(lensed)
-    unlensed = filter_data(unlensed)
+    lensed = clean_and_calc(lensed, filter_cols=use_cols)
+    unlensed = clean_and_calc(unlensed, filter_cols=use_cols)
+    
+    print(f"After filtering:\n Lensed: {len(lensed)}\n Unlensed: {len(unlensed)}")
     
     # Concatenate lensed and unlensed data, mix up
     all_data = pd.concat([lensed, unlensed])
@@ -58,7 +70,7 @@ if __name__ == '__main__':
     
     # Grid search
     rf = RandomForestClassifier()
-    clf = GridSearchCV(rf, parameters, scoring='roc_auc', cv=cv)
+    clf = GridSearchCV(rf, parameters, scoring='precision', cv=cv) # precision = tp / (tp + fp)
     clf.fit(X_train, y_train)
     
     # Predict
@@ -66,8 +78,7 @@ if __name__ == '__main__':
     preds = clf.predict(X_test)
     
     # # Summarize performance
-    print("Confusion matrix (test set):")
-    confusion_matrix(y_test, preds)
+    print(f"Confusion matrix (test set): {confusion_matrix(y_test, preds)}")
     print(f"Accuracy (test set): {accuracy_score(y_test, preds)}")
     
     # Save model to file

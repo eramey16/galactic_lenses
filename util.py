@@ -240,7 +240,7 @@ def load_data(gal_results):
     # Load into dataframe
     return row
 
-def filter_data(data):
+def clean_and_calc(data, duplicates=False, filter_cols=filter_cols):
     
     # Colors
     # data['g-r'] = data['dered_mag_g']-data['dered_mag_r']
@@ -251,6 +251,9 @@ def filter_data(data):
     data['r/z'] = data['dered_flux_r']/data['dered_flux_z']
     data['r/w1'] = data['dered_flux_r']/data['dered_flux_w1']
     data['r/w2'] = data['dered_flux_r']/data['dered_flux_w2']
+    
+    for theta in theta_labels:
+        data[theta+"_sig_diff"] = data[theta+"_sig_plus"]-data[theta+"_sig_minus"]
     
     # Uncertainties
     for b in bands:
@@ -275,7 +278,8 @@ def filter_data(data):
     data = data[data.dered_mag_r<=22]
     data.replace([np.inf, -np.inf], np.nan, inplace=True)
     data = data.dropna(subset=filter_cols)
-    data.drop_duplicates(subset=['ls_id'], inplace=True)
+    if not duplicates:
+        data.drop_duplicates(subset=['ls_id'], inplace=True)
     
     return data
 
@@ -382,4 +386,10 @@ def read_table(db_name):
     data = pd.read_sql(f"SELECT * from {db_name}", engine)
     
     return data
+
+def write_table(data, db_name, if_exists='append'):
+    
+    engine = create_engine(conn_string)
+    
+    data.to_sql(db_name, engine, if_exists=if_exists, index=False)
     
