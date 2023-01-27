@@ -10,14 +10,14 @@ import sys
 runit_file = "runit_template"
 task_filename = ["tasks", ".txt"]
 
-def make_runit(dest, time, nodes, cores, const, taskfile, tag=''):
+def make_runit(dest, time, nodes, cores, taskfile, tag=''):
     """ Makes a runit file from a template """
     # Load template file
     with open(runit_file, 'r') as file:
         runit_text = file.read()
     
     # Replace template info with user inputs
-    runit_text = runit_text.format(dest, time, nodes, cores, const, dest, taskfile)
+    runit_text = runit_text.format(dest, time, nodes, cores, dest, taskfile)
     
     # Save resulting runit file
     filename = os.path.join(dest, 'runit'+tag)
@@ -33,7 +33,6 @@ if __name__=='__main__':
     parser.add_argument("-t", "--time", type=str, default = '04:00:00', help = "Time for job to run")
     parser.add_argument("-N", "--nodes", type=str, default='15', help = "Number of nodes (>=2)")
     parser.add_argument("-c", "--cores", type=str, default='32', help = "Number of cores")
-    parser.add_argument("-o", "--constraint", type=str, choices=['knl', 'haswell'], default = 'knl', help = "System constraint")
     parser.add_argument("-b", "--batch", nargs='?', type=int, help = "Number of batches")
     parser.add_argument('--tag', nargs='?', type=str, default='', help='Tag for runit file')
     args = parser.parse_args()
@@ -48,7 +47,7 @@ if __name__=='__main__':
         for i in range(args.batch):
             task_filename[-2] = f'_{i}' + ("_" if args.tag else "")
             taskfile = ''.join(task_filename)
-            make_runit(args.dest, args.time, args.nodes, args.cores, args.constraint, 
+            make_runit(args.dest, args.time, args.nodes, args.cores, 
                        ''.join(task_filename), tag=str(i))
     else: # Make one runit
-        make_runit(args.dest, args.time, args.nodes, args.cores, args.constraint, args.taskfile, tag=args.tag)
+        make_runit(args.dest, args.time, args.nodes, args.cores, args.taskfile, tag=args.tag)
