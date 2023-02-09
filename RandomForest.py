@@ -19,7 +19,7 @@ from datetime import date
 ### Files and variables
 lens_file = "../data/dr9_training/dr9_lensed.csv"
 unlens_file = "../data/dr9_training/dr9_unlensed.csv"
-save_file = f"gridsearch_{date.today().isoformat()}.sav"
+save_file = f"gridsearch_models/gridsearch_{date.today().isoformat()}.sav"
 
 bands = ['g', 'r', 'z', 'w1', 'w2']
 theta_labels = ['dust2', 'tau', 'massmet_1', 'massmet_2', 'logtmax']
