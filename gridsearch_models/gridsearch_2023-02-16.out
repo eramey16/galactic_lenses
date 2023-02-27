@@ -1,0 +1,5 @@
+Confusion matrix (test set): [[3382   53]
+ [  12 1922]]
+Accuracy (test set): 0.9878934624697336
+Time to train: 9:38:18.237041
+Created file gridsearch_models/gridsearch_2023-02-15.sav
