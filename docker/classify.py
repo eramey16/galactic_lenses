@@ -27,12 +27,27 @@ import os
 import math
 
 bands = ['g', 'r', 'z', 'w1', 'w2']
-trac_cols = ['ls_id', 'ra', 'dec', type] \
-            + ['dered_mag_'+b for b in band] \
-            + ['dered_flux+'+b for b in band] \
-            + ['snr_'+b for b in band] \
-            + ['flux_ivar_'+b for b in band]
+trac_cols = ['ls_id', 'ra', 'dec', 'type'] \
+            + ['dered_mag_'+b for b in bands] \
+            + ['dered_flux_'+b for b in bands] \
+            + ['snr_'+b for b in bands] \
+            + ['flux_ivar_'+b for b in bands] \
+            + ['dchisq_'+str(i) for i in range(1,6)] \
+            + ['rchisq_'+b for b in bands] \
+            + ['sersic', 'sersic_ivar'] \
+            + ['psfsize_g', 'psfsize_r', 'psfsize_z'] \
+            + ['shape_r', 'shape_e1', 'shape_e2'] \
+            + ['shape_r_ivar', 'shape_e1_ivar', 'shape_e2_ivar']
 phot_z_cols = ['z_phot_median', 'z_phot_std', 'z_spec']
+all_cols = ['trac.'+col for col in trac_cols] + ['phot_z.'+col for col in phot_z_cols]
+
+query_cols = ', '.join(all_cols)
+
+output_dir = '/gradient_boosted/exports/' # Uncomment these two lines before pushing to docker
+input_dir = '/gradient_boosted/'
+# output_dir = '/global/cscratch1/sd/eramey16/gradient/' # Comment these two lines before pushing to docker
+# input_dir='/global/cscratch1/sd/eramey16/gradient/'
+prosp_file = 'photoz_hm_params_short_dpon_on.py'
 
 #given an RA and DEC, pull magnitudes, magnitude uncertainties, redshifts from NOAO
 
@@ -56,40 +71,31 @@ def get_galaxy(ra,dec,radius=0.0002777777778,data_type=None,limit=1):
         ConnectionError: If NOAO times out. You can usually re-run the function and
             it'll work.
     """
-    data = pd.DataFrame()
-
-    query =["""SELECT trac.ls_id, trac.ra, trac.dec,trac.type,trac.dered_mag_g,trac.dered_mag_r,trac.dered_mag_z,
-    trac.dered_mag_w1,trac.dered_mag_w2,1/NULLIF(trac.snr_g,0),1/NULLIF(trac.snr_r,0),1/NULLIF(trac.snr_z,0),
-    1/NULLIF(trac.snr_w1,0),1/NULLIF(trac.snr_w2,0),phot_z.z_phot_median,phot_z.z_phot_std,phot_z.z_spec, 
-    trac.dered_flux_g, trac.dered_flux_r, trac.dered_flux_z, trac.dered_flux_w1, trac.dered_flux_w2,
-    trac.dchisq_1, trac.dchisq_2, trac.dchisq_3, trac.dchisq_4, trac.dchisq_5,
-    trac.rchisq_g, trac.rchisq_r, trac.rchisq_z, trac.rchisq_w1, trac.rchisq_w2,
-    trac.sersic, trac.sersic_ivar,
-    trac.psfsize_g, trac.psfsize_r, trac.psfsize_z,
-    trac.shape_r, trac.shape_r_ivar, trac.shape_e1, trac.shape_e1_ivar, trac.shape_e2, trac.shape_e2_ivar
-    FROM ls_dr9.tractor AS trac 
-    INNER JOIN ls_dr9.photo_z AS phot_z ON trac.ls_id = phot_z.ls_id WHERE (q3c_radial_query(ra,dec,{},{},{})) """,
-    """ ORDER BY q3c_dist({}, {}, trac.ra, trac.dec) ASC""",
-    """ LIMIT {}"""]
-
+    # Set up basic query
+    query =[f"""SELECT {query_cols} FROM ls_dr9.tractor AS trac 
+    INNER JOIN ls_dr9.photo_z AS phot_z ON trac.ls_id = phot_z.ls_id 
+    WHERE (q3c_radial_query(ra,dec,{ra},{dec},{radius})) """,
+    f""" ORDER BY q3c_dist({ra}, {dec}, trac.ra, trac.dec) ASC""",
+    f""" LIMIT {limit}"""]
+    # Add data type, if specified
     if data_type is not None:
-        query.insert(1,""" AND (type = '{}') """)
-    else:
-        data_type=''
-        query.insert(1,"""{}""")
+        query.insert(1,f""" AND (type = '{data_type}') """)
+    # Join full query
     query = ''.join(query)
+    
+    # Send query to database
     try:
-        result10 = qc.query(sql=query.format(ra,dec,radius,data_type,ra,dec,limit))
-        a = convert(result10, "pandas")
-        if a.empty:
+        result10 = qc.query(sql=query) # result as string
+        data = convert(result10, "pandas") # result as dataframe
+        if data.empty:
             raise ValueError(f"No objects within {radius} of {ra},{dec}")
-        else:
-            data = data.append(a,ignore_index=True)
-            data.columns = ["ls_id", "ra", "dec","type","dered_mag_g","dered_mag_r","dered_mag_z","dered_mag_w1",
-                            "dered_mag_w2",'unc_g','unc_r','unc_z','unc_w1','unc_w2',
-                                 "z_phot_median","z_phot_std",'z_spec','dered_flux_g','dered_flux_r', 'dered_flux_z','dered_flux_w1','dered_flux_w2']
-            data.to_csv(f"/gradient_boosted/exports/galaxies_{datetime.datetime.now().time()}.csv",mode="a+",header=False)
-            return data
+            
+        # Save to file
+        ls_id = int(data.ls_id[0])
+        basic_file = f"{output_dir}{ls_id}.csv"
+        data.to_csv(basic_file, index=False)
+        return data
+    # Connection error(s) # Still going to fail when it's called and doesn't return data? TODO
     except requests.exceptions.ConnectionError as e:
         return f"ConnectionError: {e} $\nOn RA:{ra},DEC:{dec}"
     except qc.queryClientError as e:
@@ -97,44 +103,54 @@ def get_galaxy(ra,dec,radius=0.0002777777778,data_type=None,limit=1):
             f.write(f"Error on:{ra},{dec}: {e}\n")
         print(f"Query Client Error: {e} $\nRecorded on {ra},{dec} ")
 
-#arg-parse section
+def run_prospector(ls_id, redshift, mags, mag_uncs, prosp_file=prosp_file):
+    """ Runs prospector with provided parameters """
+    # Input and output filenames
+    pfile = os.path.join(input_dir, prosp_file)
+    outfile = os.path.join(output_dir, str(ls_id))
+    
+    # Run prospector with parameters
+    os.system(f'python {pfile} --objid={ls_id} --dynesty --object_redshift={redshift} --outfile={outfile} ' \
+              + f' --mag_in="{mags}" --mag_unc_in="{mag_uncs}"')
 
+
+### MAIN FUNCTION
 if __name__ == "__main__":
+    # Command line arguments
     parser = argparse.ArgumentParser()
     parser.add_argument("-r","--ra",type=float, help = "RA selection")
     parser.add_argument("-d","--dec",type=float, help="DEC selection")
     parser.add_argument("-rd", "--radius",type=float, default=0.0002777777778, help = "Radius for q3c radial query")
     parser.add_argument("-t","--type",help="Object type to search for",type=str,choices=["DUP","DEV","EXP","REX","COMP","PSF"])
-
+    
+    # Parse arguments
     args = parser.parse_args()
-
+    
+    # Get galaxy data from NOAO # TODO: will fail with no catch if there's an error
     data = get_galaxy(args.ra,args.dec,args.radius,args.type,1)
-    print(f'Object found: {data["ls_id"].values[0]}')
-    mags = [float(data['dered_mag_g'].values[0]),
-float(data['dered_mag_r'].values[0]),
-float(data['dered_mag_z'].values[0]),
-float(data['dered_mag_w1'].values[0]),
-float(data['dered_mag_w2'].values[0])]
-    uncs = [float(data['unc_g'].values[0]),
-float(data['unc_r'].values[0]),
-float(data['unc_z'].values[0]),
-float(data['unc_w1'].values[0]),
-float(data['unc_w2'].values[0])]
-    fluxes_1 = [float(data['dered_flux_g'].values[0]),
-float(data['dered_flux_r'].values[0]),
-float(data['dered_flux_z'].values[0]),
-float(data['dered_flux_w1'].values[0]),
-float(data['dered_flux_w2'].values[0])]
-
-    print(f'Redshift: {float(data["z_phot_median"].values[0])}')
-
-    if data["z_spec"].values[0] == -99:
-        red_value = data["z_phot_median"].values[0]
-    else:
-        red_value = data["z_spec"].values[0]
-    os.system(f'python /gradient_boosted/photoz_hm_params_short_dpon_on.py --objid={int(data["ls_id"].values[0])} --dynesty --object_redshift={float(red_value)} --outfile=/gradient_boosted/exports/{int(data["ls_id"].values[0])} --mag_in="{mags}" --mag_unc_in="{uncs}"')
-
-    h5_file = f"/gradient_boosted/exports/{int(data['ls_id'].values[0])}.h5"
+    data = data.iloc[0] # Series of values
+    
+    # Find 
+    print(f'Object found: {data.ls_id}')
+    
+    # magnitudes, uncertainties, and fluxes
+    mags = [data['dered_mag_'+b] for b in bands]
+    mag_uncs = [ 2.5 / (np.log(10) * data['dered_flux_'+b] * np.sqrt(data['flux_ivar_'+b])) for b in bands]
+    fluxes = [data['dered_flux_'+b] for b in bands]
+    
+    # Print
+    print(f'Redshift: {data.z_phot_median}')
+    
+    # Data shortcuts
+    ls_id = data.ls_id
+    red_value = data.z_phot_median
+    
+    # Run Prospector
+    run_prospector(ls_id, red_value, mags, mag_uncs)
+    
+    # Output file names
+    h5_file = os.path.join(output_dir, f'{ls_id}.h5')
+    basic_file = os.path.join(output_dir, f'{ls_id}.csv')
 
     def replace_neg(input):
         """Checks if scaled input values are greater than 0. If they are not,
@@ -188,10 +204,10 @@ float(data['dered_flux_w2'].values[0])]
     des_tmp_values = []
 
     des_tmp_lensed.append([0])
-    h5_file_simple = h5_file.split("/")[3].split('.')[0]
+    h5_file_simple = h5_file.split("/")[-1].split('.')[0]
     des_tmp_ids.append(int(h5_file_simple))
 
-    des_tmp_values.append(np.concatenate((replace_neg(h5py.File(h5_file,'r')['obs']['maggies'][:]), get_magflux(fluxes_1,h5py.File(h5_file,'r')['obs']['maggies_unc'][:]),[pickle.loads(h5py.File(h5_file,'r').attrs['run_params'])['object_redshift']],
+    des_tmp_values.append(np.concatenate((replace_neg(h5py.File(h5_file,'r')['obs']['maggies'][:]), get_magflux(fluxes,h5py.File(h5_file,'r')['obs']['maggies_unc'][:]),[pickle.loads(h5py.File(h5_file,'r').attrs['run_params'])['object_redshift']],
                                         h5py.File(h5_file,'r')['bestfit']['photometry'][:],
                                         [chi_s(h5_file)])).tolist())
 
@@ -244,9 +260,13 @@ float(data['dered_flux_w2'].values[0])]
             des_y_train = np.delete(des_y_train,[count],axis=0)
             count -= 1
     xgb_model = XGBClassifier()
-    xgb_model.load_model("/gradient_boosted/grad.model")
+    xgb_model.load_model(f"{input_dir}/grad.model") # this was only in gradient_boosted
     predictions = xgb_model.predict(np.array(des_tmp_values))
-    data_dict = {'ls_id':data['ls_id'].values[0],'lensed':predictions}
+    data_dict = {'ls_id':ls_id,'lensed':predictions}
     print(data_dict)
-    df = pd.DataFrame(data_dict)
-    df.to_csv(f'/gradient_boosted/exports/{data["ls_id"].values[0]}.csv',index=False)
+    # df = pd.DataFrame(data_dict)
+    
+    # Append prediction to file
+    df = pd.read_csv(basic_file)
+    df['lensed'] = predictions
+    df.to_csv(basic_file, index=False)

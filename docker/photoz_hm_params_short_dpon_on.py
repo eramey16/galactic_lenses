@@ -369,17 +369,34 @@ if __name__=='__main__':
 
     args = parser.parse_args()
     run_params = vars(args)
+    
+    # # ### EMILY'S EDITS    # Comment before uploading to Docker
+    # run_params['nested_maxiter'] = 10
+    # run_params['nested_walks'] = 5
+    # run_params['nested_maxiter_batch'] = 10
+    # run_params['niter'] = 10
+    # run_params['nwalkers'] = 5
+    # run_params['nested_maxcall'] = 10
+    # run_params['nested_maxiter_init'] = 10
+    # run_params['maxiter_init'] = 10
+    # run_params['maxiter'] = 10
+    # run_params['use_stop'] = False
+    
+    
     obs, model, sps, noise = build_all(**run_params)
 
     run_params["sps_libraries"] = sps.ssp.libraries
     run_params["param_file"] = __file__
 
     print(model)
+    print(run_params)
 
 
     #hfile = setup_h5(model=model, obs=obs, **run_params)
     hfile = "{}.h5".format(args.outfile)
     output = fit_model(obs, model, sps, noise, **run_params)
+    
+    print("Writing h5 file from photoz_hm_params")
 
     writer.write_hdf5(hfile, run_params, model, obs,
                       output["sampling"][0], output["optimization"][0],
