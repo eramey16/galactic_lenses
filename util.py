@@ -240,42 +240,47 @@ def load_data(gal_results):
     # Load into dataframe
     return row
 
-def clean_and_calc(data, duplicates=False, filter_cols=filter_cols):
+def clean_and_calc(data, duplicates=False, filter_cols=filter_cols, 
+                   mode='all', cut_mag=False):
     
-    # Colors
-    # data['g-r'] = data['dered_mag_g']-data['dered_mag_r']
-    # data['r-z'] = data['dered_mag_r']-data['dered_mag_z']
-    # data['r-w1'] = data['dered_mag_r']-data['dered_mag_w1']
-    # data['r-w2'] = data['dered_mag_r']-data['dered_mag_w2']
-    data['g/r'] = data['dered_flux_g']/data['dered_flux_r']
-    data['r/z'] = data['dered_flux_r']/data['dered_flux_z']
-    data['r/w1'] = data['dered_flux_r']/data['dered_flux_w1']
-    data['r/w2'] = data['dered_flux_r']/data['dered_flux_w2']
+    ### Filtering for DS9 data
+    if mode in ['all', 'dr9']:
+        # Calculate colors
+        data['g/r'] = data['dered_flux_g']/data['dered_flux_r']
+        data['r/z'] = data['dered_flux_r']/data['dered_flux_z']
+        data['r/w1'] = data['dered_flux_r']/data['dered_flux_w1']
+        data['r/w2'] = data['dered_flux_r']/data['dered_flux_w2']
+        
+        # Uncertainties
+        for b in bands:
+            # data['unc_'+b] = 1 / data['snr_'+b]
+            data['flux_sigma_'+b] = 1 / np.sqrt(data['flux_ivar_'+b])
+        
+        # Calculate minimum dchisq
+        dchisq = np.array(data[dchisq_labels])
+        data['min_dchisq'] = np.min(dchisq, axis=1)
+
+        # Calculate sum rchisq
+        rchisq = np.array(data[rchisq_labels])
+        data['sum_rchisq'] = np.sum(rchisq, axis=1)
+        
+        # Calculate abs mag in r band
+        dm = 5*np.log10(300000*data.z_phot_median/70)+25
+        data['abs_mag_r'] = data.dered_mag_r - dm
+        
+        # Remove bad / duplicate entries
+        data = data[data.type!='DUP']
+        data = data[data.type!='PSF']
+        
+        if cut_mag:
+            data = data[data.dered_mag_r<=22]
     
-    for theta in theta_labels:
-        data[theta+"_sig_diff"] = data[theta+"_sig_plus"]-data[theta+"_sig_minus"]
-    
-    # Uncertainties
-    for b in bands:
-        # data['unc_'+b] = 1 / data['snr_'+b]
-        data['flux_sigma_'+b] = 1 / np.sqrt(data['flux_ivar_'+b])
-    
-    # Calculate minimum dchisq
-    dchisq = np.array(data[dchisq_labels])
-    data['min_dchisq'] = np.min(dchisq, axis=1)
-    
-    # Calculate sum rchisq
-    rchisq = np.array(data[rchisq_labels])
-    data['sum_rchisq'] = np.sum(rchisq, axis=1)
-    
-    # Calculate abs mag in r band
-    dm = 5*np.log10(300000*data.z_phot_median/70)+25
-    data['abs_mag_r'] = data.dered_mag_r - dm
+    ### Calculations for prospector data
+    if mode in ['all', 'prospector']:
+        for theta in theta_labels:
+            data[theta+"_sig_diff"] = data[theta+"_sig_plus"]-data[theta+"_sig_minus"]
     
     # Remove bad / duplicate entries
-    data = data[data.type!='DUP']
-    data = data[data.type!='PSF']
-    data = data[data.dered_mag_r<=22]
     data.replace([np.inf, -np.inf], np.nan, inplace=True)
     data = data.dropna(subset=filter_cols)
     if not duplicates:

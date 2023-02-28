@@ -75,6 +75,16 @@ AND NOT trac.type='PSF'
 ```
 * Changed the 1/NULLIF statements to just return the SNR
 
+### New query for test data 02/23
+```
+SELECT trac.ls_id, trac.ra, trac.dec, trac.type, trac.dered_mag_g, trac.dered_mag_r, trac.dered_mag_z, trac.dered_mag_w1, trac.dered_mag_w2, trac.snr_g, trac.snr_r, trac.snr_z, trac.snr_w1, trac.snr_w2, phot_z.z_phot_median, phot_z.z_phot_std, phot_z.z_spec, trac.dered_flux_g, trac.dered_flux_r, trac.dered_flux_z, trac.dered_flux_w1, trac.dered_flux_w2, trac.dchisq_1, trac.dchisq_2, trac.dchisq_3, trac.dchisq_4, trac.dchisq_5, trac.rchisq_g, trac.rchisq_r, trac.rchisq_z, trac.rchisq_w1, trac.rchisq_w2, trac.psfsize_g, trac.psfsize_r, trac.psfsize_z, trac.sersic, trac.sersic_ivar, trac.shape_e1, trac.shape_e1_ivar, trac.shape_e2, trac.shape_e2_ivar, trac.shape_r, trac.shape_r_ivar, trac.random_id
+FROM ls_dr9.tractor AS trac
+INNER JOIN ls_dr9.photo_z AS phot_z ON trac.ls_id = phot_z.ls_id
+WHERE (q3c_radial_query(ra,dec, 160, 2, 6))
+AND NOT trac.type='PSF'
+ORDER BY trac.random_id
+```
+
 ### Query for Docker pipeline
 ```
 bands = ['g', 'r', 'z', 'w1', 'w2']
