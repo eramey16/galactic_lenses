@@ -11,31 +11,36 @@ import h5py
 import psycopg2
 import corner
 from sqlalchemy import create_engine, Column, Table, MetaData
-from sqlalchemy.types import BIGINT, FLOAT, REAL, VARCHAR
+from sqlalchemy import String, DateTime
+from sqlalchemy.types import BIGINT, FLOAT, REAL, VARCHAR, BOOLEAN, INT
+from sqlalchemy.sql import func
+from sqlalchemy.orm import declarative_base
 import prospect.io.read_results as reader
 
+Base = declarative_base()
+
 # Old columns
-cols_old = ["ls_id", "ra", "dec","type",
-        "dered_mag_g","dered_mag_r","dered_mag_z",
-        "dered_mag_w1", "dered_mag_w2",'unc_g','unc_r',
-        'unc_z','unc_w1','unc_w2', "z_phot_median",
-        "z_phot_std",'z_spec','dered_flux_g','dered_flux_r',
-        'dered_flux_z','dered_flux_w1','dered_flux_w2'
-       ]
+# cols_old = ["ls_id", "ra", "dec","type",
+#         "dered_mag_g","dered_mag_r","dered_mag_z",
+#         "dered_mag_w1", "dered_mag_w2",'unc_g','unc_r',
+#         'unc_z','unc_w1','unc_w2', "z_phot_median",
+#         "z_phot_std",'z_spec','dered_flux_g','dered_flux_r',
+#         'dered_flux_z','dered_flux_w1','dered_flux_w2'
+#        ]
 
 # Previous updated columns
-cols_middle = ["ls_id", "ra", "dec","type",
-        "dered_mag_g","dered_mag_r","dered_mag_z",
-        "dered_mag_w1", "dered_mag_w2",'snr_g','snr_r',
-        'snr_z','snr_w1','snr_w2', "z_phot_median",
-        "z_phot_std",'z_spec','dered_flux_g','dered_flux_r',
-        'dered_flux_z','dered_flux_w1','dered_flux_w2', 
-        'dchisq_1', 'dchisq_2', 'dchisq_3', 'dchisq_4', 'dchisq_5',
-        'rchisq_g', 'rchisq_r', 'rchisq_z', 'rchisq_w1', 'rchisq_w2',
-        'psfsize_g', 'psfsize_r', 'psfsize_z', 'sersic', 'sersic_ivar',
-        'shape_e1', 'shape_e1_ivar', 'shape_e2', 'shape_e2_ivar', 
-        'shape_r', 'shape_r_ivar',
-       ]
+# cols_middle = ["ls_id", "ra", "dec","type",
+#         "dered_mag_g","dered_mag_r","dered_mag_z",
+#         "dered_mag_w1", "dered_mag_w2",'snr_g','snr_r',
+#         'snr_z','snr_w1','snr_w2', "z_phot_median",
+#         "z_phot_std",'z_spec','dered_flux_g','dered_flux_r',
+#         'dered_flux_z','dered_flux_w1','dered_flux_w2', 
+#         'dchisq_1', 'dchisq_2', 'dchisq_3', 'dchisq_4', 'dchisq_5',
+#         'rchisq_g', 'rchisq_r', 'rchisq_z', 'rchisq_w1', 'rchisq_w2',
+#         'psfsize_g', 'psfsize_r', 'psfsize_z', 'sersic', 'sersic_ivar',
+#         'shape_e1', 'shape_e1_ivar', 'shape_e2', 'shape_e2_ivar', 
+#         'shape_r', 'shape_r_ivar',
+#        ]
 
 # New updated columns
 bands = ['g', 'r', 'z', 'w1', 'w2']
@@ -104,6 +109,7 @@ db_cols = [
     Column('dec', FLOAT),
     Column('type', VARCHAR(4)),
     *[Column(col, FLOAT) for col in cols_new[4:]+h5_cols[1:]], # All other cols
+    Column('lensed', BOOLEAN),
     Column('id', BIGINT, primary_key=True, autoincrement=True)
 ]
 
@@ -243,6 +249,8 @@ def load_data(gal_results):
 def clean_and_calc(data, duplicates=False, filter_cols=filter_cols, 
                    mode='all', cut_mag=False):
     
+    data = data.copy()
+    
     ### Filtering for DS9 data
     if mode in ['all', 'dr9']:
         # Calculate colors
@@ -289,7 +297,7 @@ def clean_and_calc(data, duplicates=False, filter_cols=filter_cols,
     return data
 
 def collect_all(path, db_name=None, lim=None):
-    """ Merges output files into one CSV """
+    """ Merges output files into one database """
     # Get both data tables
     basic = collect_gals(path, lim)
     # lensed = collect_lensed(path)
@@ -316,11 +324,10 @@ def collect_all(path, db_name=None, lim=None):
     else:
         return all_data
 
-def setup_table(table_name):
+def setup_table(conn, table_name):
     """ Sets up a new database table if one does not exist """
-    # Metadata objects
-    meta = MetaData()
-    engine = create_engine(conn_string)
+    # Metadata object
+    meta = MetaData(conn)
     
     # Table columns
     tbl = Table(
@@ -329,7 +336,43 @@ def setup_table(table_name):
     )
     
     # Create table
-    meta.create_all(engine)
+    meta.create_all(conn, checkfirst=True)
+    
+    return tbl
+
+def bookkeeping_setup(conn, table_name, data, tag=None):
+    """ Start bookkeeping for a series of galaxies and a given pandas table """
+    # Metadata object
+    meta = MetaData(conn)
+    
+    # Bookkeeping table columns
+    bktbl = Table("bookkeeping", meta,
+        Column('id', BIGINT, primary_key=True, autoincrement=True),
+        Column('tbl_id', BIGINT),
+        Column('tbl_name', String),
+        Column('ls_id', BIGINT),
+        Column('created', DateTime, default=func.now()),
+        Column('stage', INT, default=0),
+        Column('tag', String, default='untagged'),
+    )
+    
+    # Create table if needed
+    meta.create_all(conn, checkfirst=True)
+    data_tbl = setup_table(conn, table_name)
+    
+    for i,row in data.iterrows():
+        stmt = data_tbl.insert().values(**row)
+        result = conn.execute(stmt)
+        pkey = result.inserted_primary_key[0]
+        
+        # For now just assume we have dr9 data
+        stmt = bktbl.insert().values(tbl_id=pkey, 
+                              tbl_name=table_name,
+                              ls_id=row.ls_id,
+                              stage=1, 
+                              tag=tag
+                            )
+        conn.execute(stmt)
 
 def save_to_db(path, db_name, lim=None, delete=False):
     """ Saves a prospector folder's contents to a database """
@@ -347,7 +390,7 @@ def save_to_db(path, db_name, lim=None, delete=False):
     # Make new table if one doesn't exist
     with engine.connect() as conn:
         if not engine.dialect.has_table(conn, db_name):
-            setup_table(db_name)
+            setup_table(conn, db_name)
     
     # Loop through filenames
     for h5_file in h5_files:
@@ -382,6 +425,8 @@ def save_to_db(path, db_name, lim=None, delete=False):
         if delete:
             os.remove(h5_file)
             os.remove(basic_file)
+    
+    conn.close()
 
 def read_table(db_name):
     """ Reads a pandas table in from a database """

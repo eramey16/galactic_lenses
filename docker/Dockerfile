@@ -6,6 +6,7 @@ RUN pip install --ignore-installed noaodatalab
 ADD classify.py gradient_boosted/classify.py
 ADD grad.model gradient_boosted/grad.model
 ADD photoz_hm_params_short_dpon_on.py gradient_boosted/photoz_hm_params_short_dpon_on.py
-WORKDIR gradient_boosted 
+ADD util.py gradient_boosted/util.py
+WORKDIR gradient_boosted
 WORKDIR exports 
 WORKDIR ../../

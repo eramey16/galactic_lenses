@@ -14,7 +14,6 @@ import pandas as pd
 import numpy as np
 from xgboost import XGBClassifier
 import h5py
-import psycopg2
 import requests
 import random
 import datetime
@@ -25,6 +24,9 @@ import glob
 import sys
 import os
 import math
+
+import sqlalchemy
+import util
 
 bands = ['g', 'r', 'z', 'w1', 'w2']
 trac_cols = ['ls_id', 'ra', 'dec', 'type'] \
@@ -135,7 +137,8 @@ if __name__ == "__main__":
     
     # magnitudes, uncertainties, and fluxes
     mags = [data['dered_mag_'+b] for b in bands]
-    mag_uncs = [ 2.5 / (np.log(10) * data['dered_flux_'+b] * np.sqrt(data['flux_ivar_'+b])) for b in bands]
+    mag_uncs = [ 2.5 / (np.log(10) * data['dered_flux_'+b] * 
+                        np.sqrt(data['flux_ivar_'+b])) for b in bands]
     fluxes = [data['dered_flux_'+b] for b in bands]
     
     # Print
@@ -152,51 +155,51 @@ if __name__ == "__main__":
     h5_file = os.path.join(output_dir, f'{ls_id}.h5')
     basic_file = os.path.join(output_dir, f'{ls_id}.csv')
 
-    def replace_neg(input):
-        """Checks if scaled input values are greater than 0. If they are not,
-        the minimum scaled input value that is, replaces negative values in the
-        final output.
+#     def replace_neg(input):
+#         """Checks if scaled input values are greater than 0. If they are not,
+#         the minimum scaled input value that is, replaces negative values in the
+#         final output.
 
-        Parameters:
-            input: Some iterable consisting of numbers.
-        Returns:
-            output: A list of scaled values, negatives replaced w/ minimum.
-        """
-        output = []
-        neg = []
-        for x in input:
-            if -2.5*np.log(x) > 0:
-                output.append(-2.5*np.log(x))
-            else:
-                neg.append(x)
-        min_o = min(output)
-        for x in range(len(neg)):
-            output.append(min_o)
-        return output
+#         Parameters:
+#             input: Some iterable consisting of numbers.
+#         Returns:
+#             output: A list of scaled values, negatives replaced w/ minimum.
+#         """
+#         output = []
+#         neg = []
+#         for x in input:
+#             if -2.5*np.log(x) > 0:
+#                 output.append(-2.5*np.log(x))
+#             else:
+#                 neg.append(x)
+#         min_o = min(output)
+#         for x in range(len(neg)):
+#             output.append(min_o)
+#         return output
 
 
-    def get_magflux(flux, unc):
-        """Divides flux by uncertainty.
-        """
-        output = []
-        for x, y in zip(flux,unc):
-            output.append(x/(y))
-        return output
+#     def get_magflux(flux, unc):
+#         """Divides flux by uncertainty.
+#         """
+#         output = []
+#         for x, y in zip(flux,unc):
+#             output.append(x/(y))
+#         return output
 
-    def chi_s(model_file):
-        """Compute chi squared statistic on model and observed photometry
-        for a particular object
+#     def chi_s(model_file):
+#         """Compute chi squared statistic on model and observed photometry
+#         for a particular object
 
-        Paramaters:
-            model_file (str): HDF5 file output from Prospector for an object
-        Returns:
-            final_sum (float): Chi squared statistic
-        """
-        final_sum = 0
-        res, obs, mod = results_from(model_file, dangerous=False)
-        for model, observed, unc in zip(res['bestfit']['photometry'],res['obs']['maggies'],res['obs']['maggies_unc']):
-            final_sum += ((observed-model)**2)/(unc**2)
-        return final_sum
+#         Paramaters:
+#             model_file (str): HDF5 file output from Prospector for an object
+#         Returns:
+#             final_sum (float): Chi squared statistic
+#         """
+#         final_sum = 0
+#         res, obs, mod = results_from(model_file, dangerous=False)
+#         for model, observed, unc in zip(res['bestfit']['photometry'],res['obs']['maggies'],res['obs']['maggies_unc']):
+#             final_sum += ((observed-model)**2)/(unc**2)
+#         return final_sum
 
 
     des_tmp_lensed = []
@@ -270,3 +273,8 @@ if __name__ == "__main__":
     df = pd.read_csv(basic_file)
     df['lensed'] = predictions
     df.to_csv(basic_file, index=False)
+
+    
+### TODO: Anything under the commented blocs isn't needed at all besides the last few lines.
+###       Edit this to update the database instead of making files and get the final lensed value
+###         based on the RandomForest classifier
