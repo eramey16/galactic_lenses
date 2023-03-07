@@ -9,9 +9,6 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix, roc_curve
 from sklearn.ensemble import GradientBoostingClassifier
-import matplotlib.pyplot as plt
-import pandas as pd
-import numpy as np
 from xgboost import XGBClassifier
 import h5py
 import requests
@@ -19,7 +16,6 @@ import random
 import datetime
 import random
 import argparse
-import pickle
 import glob
 import sys
 import os
@@ -27,6 +23,14 @@ import math
 
 import sqlalchemy
 import util
+import pickle
+import pandas as pd
+import numpy as np
+
+import prospect.io.read_results as reader
+
+from psycopg2.extensions import register_adapter, AsIs
+register_adapter(np.int64, AsIs)
 
 bands = ['g', 'r', 'z', 'w1', 'w2']
 trac_cols = ['ls_id', 'ra', 'dec', 'type'] \
@@ -53,7 +57,7 @@ prosp_file = 'photoz_hm_params_short_dpon_on.py'
 
 #given an RA and DEC, pull magnitudes, magnitude uncertainties, redshifts from NOAO
 
-def get_galaxy(ra,dec,radius=0.0002777777778,data_type=None,limit=1):
+def query_galaxy(ra,dec,radius=0.0002777777778,data_type=None,limit=1):
     """Queries the NOAO Legacy Survey Data Release 8 Tractor and Photo-Z tables
 
     Parameters:
@@ -85,7 +89,7 @@ def get_galaxy(ra,dec,radius=0.0002777777778,data_type=None,limit=1):
     # Join full query
     query = ''.join(query)
     
-    # Send query to database
+    # Send query to NOIRlab
     try:
         result10 = qc.query(sql=query) # result as string
         data = convert(result10, "pandas") # result as dataframe
@@ -105,6 +109,89 @@ def get_galaxy(ra,dec,radius=0.0002777777778,data_type=None,limit=1):
             f.write(f"Error on:{ra},{dec}: {e}\n")
         print(f"Query Client Error: {e} $\nRecorded on {ra},{dec} ")
 
+def get_galaxy(ls_id, tag=None, engine=None):
+    """ Gets a galaxy and its data from the psql database """
+    # Make a database connection
+    if engine is None:
+        engine = sqlalchemy.create_engine(util.conn_string)
+    conn = engine.connect()
+    
+    bkdata = pd.DataFrame(
+        conn.execute(f"SELECT * FROM bookkeeping WHERE ls_id={ls_id}"))
+    
+    if bkdata.empty:
+        raise ValueError(f"No galaxy with LSID {ls_id} is present in the bookkeeping table")
+    elif len(bkdata)>1:
+        bkdata = bkdata[bkdata.tag==tag]
+        if len(bkdata)!=1:
+            raise ValueError(f"Too many entries for LSID {ls_id}. Enter a tag.")
+    
+    gal_meta = bkdata.iloc[0]
+    if gal_meta.stage != 1:
+        raise ValueError(f"Stage is wrong for galaxy {ls_id}. Current stage: {gal_meta.stage}")
+    
+    tbldata = pd.DataFrame(
+        conn.execute(f"SELECT * FROM {gal_meta.tbl_name} WHERE id={gal_meta.tbl_id}"))
+    
+    conn.close()
+    
+    return bkdata, tbldata[util.dr9_cols]
+
+def merge_prospector(dr9_data, h5_file=None):
+    """ Collects prospector data on a galaxy and merges it with dr9 data """
+    basic_data = dr9_data.iloc[0] # Series of values
+    
+    # Find 
+    print(f'Object found: {basic_data.ls_id}')
+    
+    # magnitudes, uncertainties, and fluxes
+    mags = [basic_data['dered_mag_'+b] for b in bands]
+    mag_uncs = [ 2.5 / (np.log(10) * basic_data['dered_flux_'+b] * 
+                        np.sqrt(basic_data['flux_ivar_'+b])) for b in bands]
+    fluxes = [basic_data['dered_flux_'+b] for b in bands]
+    
+    # Print
+    print(f'Redshift: {basic_data.z_phot_median}')
+    
+    # Data shortcuts
+    red_value = basic_data.z_phot_median
+    
+    # Run Prospector
+    if h5_file is None:
+        h5_file = run_prospector(ls_id, red_value, mags, mag_uncs)
+    
+    # Read prospector file
+    h5_data = reader.results_from(h5_file)
+    prosp_data = util.load_data(h5_data)
+    
+    dr9_data.loc[0, util.h5_cols[1:]] = prosp_data
+    
+    return dr9_data
+
+def update_db(bkdata, gal_data, engine=None):
+    """ Updates the database using the bookkeeping and galaxy data provided """
+    # Make a database connection
+    if engine is None:
+        engine = sqlalchemy.create_engine(util.conn_string)
+    conn = engine.connect()
+    
+    bkdata = bkdata.iloc[0]
+    gal_data = gal_data.iloc[0]
+    
+    data_tbl = util.setup_table(conn, bkdata.tbl_name)
+    
+    # Update galaxy table
+    db_cols = [col.name for col in util.db_cols][1:-1] # get usable columns of db
+    update_data = gal_data[db_cols]
+    stmt = data_tbl.update().where(data_tbl.c.id==1).values(**update_data)
+    conn.execute(stmt)
+    
+    # Update bookkeeping table
+    stmt = f"UPDATE bookkeeping SET stage = 2 WHERE id = {str(bkdata.id)}"
+    conn.execute(stmt)
+    
+    conn.close()
+
 def run_prospector(ls_id, redshift, mags, mag_uncs, prosp_file=prosp_file):
     """ Runs prospector with provided parameters """
     # Input and output filenames
@@ -112,14 +199,30 @@ def run_prospector(ls_id, redshift, mags, mag_uncs, prosp_file=prosp_file):
     outfile = os.path.join(output_dir, str(ls_id))
     
     # Run prospector with parameters
-    os.system(f'python {pfile} --objid={ls_id} --dynesty --object_redshift={redshift} --outfile={outfile} ' \
-              + f' --mag_in="{mags}" --mag_unc_in="{mag_uncs}"')
+    os.system(f'python {pfile} --objid={ls_id} --dynesty --object_redshift={redshift} ' \
+              + f'--outfile={outfile} --mag_in="{mags}" --mag_unc_in="{mag_uncs}"')
+    
+    return outfile +'.h5'
+
+def predict(gal_data, model_file=None, thresh=0.05):
+    if model_file is None:
+        model_file = os.path.join(input_dir, "rf.model")
+    
+    with open(model_file, 'rb') as file:
+        clf = pickle.load(file)
+    
+    pred_data = util.clean_and_calc(gal_data)[clf.feature_names_in_]
+    
+    pred = clf.predict_proba(pred_data)[:,0] < thresh
+    
+    return pred
 
 
 ### MAIN FUNCTION
 if __name__ == "__main__":
     # Command line arguments
     parser = argparse.ArgumentParser()
+    parser.add_argument("-l", "--ls_id", type=int, help="LS ID of the galaxy")
     parser.add_argument("-r","--ra",type=float, help = "RA selection")
     parser.add_argument("-d","--dec",type=float, help="DEC selection")
     parser.add_argument("-rd", "--radius",type=float, default=0.0002777777778, help = "Radius for q3c radial query")
@@ -128,153 +231,24 @@ if __name__ == "__main__":
     # Parse arguments
     args = parser.parse_args()
     
-    # Get galaxy data from NOAO # TODO: will fail with no catch if there's an error
-    data = get_galaxy(args.ra,args.dec,args.radius,args.type,1)
-    data = data.iloc[0] # Series of values
-    
-    # Find 
-    print(f'Object found: {data.ls_id}')
-    
-    # magnitudes, uncertainties, and fluxes
-    mags = [data['dered_mag_'+b] for b in bands]
-    mag_uncs = [ 2.5 / (np.log(10) * data['dered_flux_'+b] * 
-                        np.sqrt(data['flux_ivar_'+b])) for b in bands]
-    fluxes = [data['dered_flux_'+b] for b in bands]
-    
-    # Print
-    print(f'Redshift: {data.z_phot_median}')
-    
-    # Data shortcuts
-    ls_id = data.ls_id
-    red_value = data.z_phot_median
-    
-    # Run Prospector
-    run_prospector(ls_id, red_value, mags, mag_uncs)
-    
     # Output file names
-    h5_file = os.path.join(output_dir, f'{ls_id}.h5')
-    basic_file = os.path.join(output_dir, f'{ls_id}.csv')
-
-#     def replace_neg(input):
-#         """Checks if scaled input values are greater than 0. If they are not,
-#         the minimum scaled input value that is, replaces negative values in the
-#         final output.
-
-#         Parameters:
-#             input: Some iterable consisting of numbers.
-#         Returns:
-#             output: A list of scaled values, negatives replaced w/ minimum.
-#         """
-#         output = []
-#         neg = []
-#         for x in input:
-#             if -2.5*np.log(x) > 0:
-#                 output.append(-2.5*np.log(x))
-#             else:
-#                 neg.append(x)
-#         min_o = min(output)
-#         for x in range(len(neg)):
-#             output.append(min_o)
-#         return output
-
-
-#     def get_magflux(flux, unc):
-#         """Divides flux by uncertainty.
-#         """
-#         output = []
-#         for x, y in zip(flux,unc):
-#             output.append(x/(y))
-#         return output
-
-#     def chi_s(model_file):
-#         """Compute chi squared statistic on model and observed photometry
-#         for a particular object
-
-#         Paramaters:
-#             model_file (str): HDF5 file output from Prospector for an object
-#         Returns:
-#             final_sum (float): Chi squared statistic
-#         """
-#         final_sum = 0
-#         res, obs, mod = results_from(model_file, dangerous=False)
-#         for model, observed, unc in zip(res['bestfit']['photometry'],res['obs']['maggies'],res['obs']['maggies_unc']):
-#             final_sum += ((observed-model)**2)/(unc**2)
-#         return final_sum
-
-
-    des_tmp_lensed = []
-    des_tmp_ids = []
-    des_tmp_values = []
-
-    des_tmp_lensed.append([0])
-    h5_file_simple = h5_file.split("/")[-1].split('.')[0]
-    des_tmp_ids.append(int(h5_file_simple))
-
-    des_tmp_values.append(np.concatenate((replace_neg(h5py.File(h5_file,'r')['obs']['maggies'][:]), get_magflux(fluxes,h5py.File(h5_file,'r')['obs']['maggies_unc'][:]),[pickle.loads(h5py.File(h5_file,'r').attrs['run_params'])['object_redshift']],
-                                        h5py.File(h5_file,'r')['bestfit']['photometry'][:],
-                                        [chi_s(h5_file)])).tolist())
-
-    c = list(zip(des_tmp_values,des_tmp_lensed,des_tmp_ids))
-    random.shuffle(c)
-    des_tmp_values,des_tmp_lensed,des_tmp_ids = zip(*c)
-
-    dict_2 = {}
-    dict_2['values'] = des_tmp_values
-    dict_2['ids'] = des_tmp_ids
-    dict_2['lensed'] = des_tmp_lensed
-
-
-    #make into pandas dataframe
-    des_final = pd.DataFrame(dict_2)
-
-    #attempt to remove useless rows
-    for index, row in des_final.iterrows():
-        if np.inf in row['values']:
-            final = des_final.drop(index)
-        if np.nan in row['values'] :
-            final = des_final.drop(index)
-
-    des_final = des_final.reset_index()
-    des_final= des_final.drop('index',axis=1)
-
-    des_train_data = des_final.iloc[:]
-
-    #match ids to lensed values for later tracking
-    des_y_train = []
-    for ls_id, lensed_value in zip(des_train_data['ids'].iloc[:],des_train_data['lensed'].iloc[:]):
-        des_y_train.append([ls_id,lensed_value])
-
-
-    #drop lensed column as it's already in y_train now
-    des_train_data = des_train_data.drop(['lensed'],axis=1)
-    des_train_data = des_train_data.drop(['ids'],axis=1)
-
-    #trying to get a list of the main list of values
-    des_X_train = [x[0] for x in des_train_data.values]
-
-    count = -1
-    for x in des_X_train:
-        if np.isfinite(x).all():
-            count += 1
-            continue
-        else:
-            count +=1
-            des_X_train = np.delete(des_X_train,[count],axis=0)
-            des_y_train = np.delete(des_y_train,[count],axis=0)
-            count -= 1
-    xgb_model = XGBClassifier()
-    xgb_model.load_model(f"{input_dir}/grad.model") # this was only in gradient_boosted
-    predictions = xgb_model.predict(np.array(des_tmp_values))
-    data_dict = {'ls_id':ls_id,'lensed':predictions}
-    print(data_dict)
-    # df = pd.DataFrame(data_dict)
+    h5_file = os.path.join(output_dir, f'{args.ls_id}.h5')
+    basic_file = os.path.join(output_dir, f'{args.ls_id}.csv')
     
-    # Append prediction to file
-    df = pd.read_csv(basic_file)
-    df['lensed'] = predictions
-    df.to_csv(basic_file, index=False)
-
+    # Sqlalchemy
+    engine = sqlalchemy.create_engine(util.conn_string)
     
-### TODO: Anything under the commented blocs isn't needed at all besides the last few lines.
-###       Edit this to update the database instead of making files and get the final lensed value
-###         based on the RandomForest classifier
+    # Get dr9 data from the database
+    bkdata, tbldata = get_galaxy(args.ls_id, engine=engine)
+    
+    # Run/read prospector file and get full dataframe
+    gal_data = merge_prospector(tbldata, args.ls_id)
+    
+    # Test on RF model
+    pred = predict(gal_data)
+    gal_data['lensed'] = pred
+    
+    # Write output to database
+    update_db(bkdata, gal_data, engine=engine)
+    
+    engine.dispose()

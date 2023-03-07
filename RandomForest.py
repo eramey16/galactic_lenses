@@ -23,10 +23,7 @@ save_file = f"gridsearch_models/gridsearch_{date.today().isoformat()}.sav"
 
 bands = ['g', 'r', 'z', 'w1', 'w2']
 theta_labels = ['massmet_1', 'massmet_2', 'dust2', 'tau', 'logtmax']
-use_cols = ['g/r', 'r/z', 'r/w1', 'r/w2', 'z_phot_median', 'chisq_maggies']
-use_cols.extend([f"rchisq_{band}" for band in bands])
-use_cols.extend([theta+"_med" for theta in theta_labels])
-use_cols.extend([theta+"_sig_diff" for theta in theta_labels])
+use_cols = util.use_cols
 seed = 42
 
 ### Parameters for Grid Search

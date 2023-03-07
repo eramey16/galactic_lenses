@@ -57,7 +57,7 @@ trac_cols = ['ls_id', 'ra', 'dec', 'type'] \
             + ['shape_r_ivar', 'shape_e1_ivar', 'shape_e2_ivar']
 phot_z_cols = ['z_phot_median', 'z_phot_std', 'z_spec']
 
-cols_new = trac_cols+phot_z_cols
+dr9_cols = trac_cols+phot_z_cols
 
 theta_labels = ['dust2', 'tau', 'massmet_1', 'massmet_2', 'logtmax']
 
@@ -71,13 +71,15 @@ h5_cols = ['ls_id'] + \
         [f'{theta}_sig_plus' for theta in theta_labels] + \
         ['chisq_maggies']
 
-# Setup for columns
-bands = ['g', 'r', 'z', 'w1', 'w2']
+# Columns to use for ML ### TODO: fix these
+use_cols = ['g/r', 'r/z', 'r/w1', 'r/w2', 'z_phot_median', 'chisq_maggies'] + \
+            [f"rchisq_{band}" for band in bands] + \
+            [theta+"_med" for theta in theta_labels] + \
+            [theta+"_sig_diff" for theta in theta_labels]
 
-# Columns to use
-use_cols = ['dered_flux_'+b for b in bands] + ['g/r', 'r/z', 'r/w1', 'r/w2'] + ['z_phot_median', 'min_dchisq']
 # Columns to filter on
-filter_cols = use_cols+['flux_ivar_'+b for b in bands]+['ls_id', 'ra', 'dec', 'type']
+filter_cols = use_cols+['dered_mag_'+b for b in bands]+['ls_id', 'ra', 'dec', 'type']
+
 dchisq_labels = [f'dchisq_{i}' for i in range(1,6)]
 rchisq_labels = ['rchisq_g', 'rchisq_r', 'rchisq_z', 'rchisq_w1', 'rchisq_w2']
 
@@ -108,7 +110,7 @@ db_cols = [
     Column('ra', FLOAT),
     Column('dec', FLOAT),
     Column('type', VARCHAR(4)),
-    *[Column(col, FLOAT) for col in cols_new[4:]+h5_cols[1:]], # All other cols
+    *[Column(col, FLOAT) for col in dr9_cols[4:]+h5_cols[1:]], # All other cols
     Column('lensed', BOOLEAN),
     Column('id', BIGINT, primary_key=True, autoincrement=True)
 ]
@@ -250,6 +252,7 @@ def clean_and_calc(data, duplicates=False, filter_cols=filter_cols,
                    mode='all', cut_mag=False):
     
     data = data.copy()
+    filter_cols = [col for col in filter_cols if col in data.columns]
     
     ### Filtering for DS9 data
     if mode in ['all', 'dr9']:
