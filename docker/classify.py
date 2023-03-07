@@ -114,10 +114,12 @@ def get_galaxy(ls_id, tag=None, engine=None):
     # Make a database connection
     if engine is None:
         engine = sqlalchemy.create_engine(util.conn_string)
+    
     conn = engine.connect()
     
-    bkdata = pd.DataFrame(
-        conn.execute(f"SELECT * FROM bookkeeping WHERE ls_id={ls_id}"))
+    result = conn.execute(f"SELECT * FROM bookkeeping WHERE ls_id={ls_id}")
+    
+    bkdata = pd.DataFrame(result)
     
     if bkdata.empty:
         raise ValueError(f"No galaxy with LSID {ls_id} is present in the bookkeeping table")
