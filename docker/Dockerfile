@@ -1,5 +1,6 @@
 FROM audreykoz/prospy:latest
 RUN pip install --upgrade sklearn xgboost
+RUN pip install SQLAlchemy
 RUN apt-get update
 RUN apt-get -y install libssl-dev libcurl4-openssl-dev python-dev
 RUN pip install --ignore-installed noaodatalab
