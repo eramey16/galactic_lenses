@@ -118,9 +118,7 @@ def get_galaxy(ls_id, tag=None, engine=None):
     
     conn = engine.connect()
     
-    result = conn.execute(text(f"SELECT * FROM bookkeeping WHERE ls_id={ls_id}"))
-    
-    bkdata = pd.DataFrame(result)
+    bkdata = pd.DataFrame(conn.execute(f"SELECT * FROM bookkeeping WHERE ls_id={ls_id}"))
     
     if bkdata.empty:
         raise ValueError(f"No galaxy with LSID {ls_id} is present in the bookkeeping table")
@@ -137,11 +135,11 @@ def get_galaxy(ls_id, tag=None, engine=None):
         raise ValueError(f"Stage is wrong for galaxy {ls_id}. Current stage: {gal_meta['stage']}")
     
     tbldata = pd.DataFrame(
-        conn.execute(text(f"SELECT * FROM {gal_meta['tbl_name']} WHERE id={gal_meta['tbl_id']}")))
+        conn.execute(f"SELECT * FROM {gal_meta['tbl_name']} WHERE id={gal_meta['tbl_id']}"))
     
     conn.close()
     
-    print(tbl_data)
+    print(tbldata)
     
     return bkdata, tbldata[util.dr9_cols]
 
