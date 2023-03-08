@@ -1,8 +1,8 @@
 FROM audreykoz/prospy:latest
 RUN pip install --upgrade sklearn xgboost
 RUN conda update conda
-RUN conda install --upgrade pandas==1.4.2
-RUN conda install --upgrade SQLAlchemy==1.4.32
+RUN conda install pandas=1.4.2
+RUN conda install SQLAlchemy=1.4.32
 RUN conda install -c astropy corner
 RUN apt-get update
 RUN apt-get -y install libssl-dev libcurl4-openssl-dev python-dev
