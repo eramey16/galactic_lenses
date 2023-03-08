@@ -1,7 +1,7 @@
 FROM audreykoz/prospy:latest
 RUN pip install --upgrade sklearn xgboost
 RUN pip install --upgrade SQLAlchemy==1.4.32
-RUN pip install --upgrade pandas
+RUN pip install --upgrade pandas==1.4.2
 RUN pip install corner
 RUN apt-get update
 RUN apt-get -y install libssl-dev libcurl4-openssl-dev python-dev
