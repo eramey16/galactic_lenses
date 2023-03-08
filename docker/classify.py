@@ -58,6 +58,8 @@ prosp_file = 'photoz_hm_params_short_dpon_on.py'
 
 #given an RA and DEC, pull magnitudes, magnitude uncertainties, redshifts from NOAO
 
+print(sqlalchemy.__version__)
+
 def query_galaxy(ra,dec,radius=0.0002777777778,data_type=None,limit=1):
     """Queries the NOAO Legacy Survey Data Release 8 Tractor and Photo-Z tables
 
