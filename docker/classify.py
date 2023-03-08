@@ -164,7 +164,7 @@ def merge_prospector(dr9_data, h5_file=None):
     
     # Run Prospector
     if h5_file is None:
-        h5_file = run_prospector(ls_id, red_value, mags, mag_uncs)
+        h5_file = run_prospector(basic_data.ls_id, red_value, mags, mag_uncs)
     
     # Read prospector file
     h5_data = reader.results_from(h5_file)
@@ -202,8 +202,7 @@ def run_prospector(ls_id, redshift, mags, mag_uncs, prosp_file=prosp_file):
     """ Runs prospector with provided parameters """
     # Input and output filenames
     pfile = os.path.join(input_dir, prosp_file)
-    outfile = os.path.join(output_dir, f"{ls_id}.h5")
-    print(f"Output file: {outfile}")
+    outfile = os.path.join(output_dir, str(ls_id))
     
     # Run prospector with parameters
     os.system(f'python {pfile} --objid={ls_id} --dynesty --object_redshift={redshift} ' \
@@ -249,7 +248,7 @@ if __name__ == "__main__":
     bkdata, tbldata = get_galaxy(args.ls_id, engine=engine)
     
     # Run/read prospector file and get full dataframe
-    gal_data = merge_prospector(tbldata, args.ls_id)
+    gal_data = merge_prospector(tbldata)
     
     # Test on RF model
     pred = predict(gal_data)
