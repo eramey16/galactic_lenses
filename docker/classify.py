@@ -202,7 +202,8 @@ def run_prospector(ls_id, redshift, mags, mag_uncs, prosp_file=prosp_file):
     """ Runs prospector with provided parameters """
     # Input and output filenames
     pfile = os.path.join(input_dir, prosp_file)
-    outfile = os.path.join(output_dir, str(ls_id))
+    outfile = os.path.join(output_dir, f"{ls_id}.h5")
+    print(f"Output file: {outfile}")
     
     # Run prospector with parameters
     os.system(f'python {pfile} --objid={ls_id} --dynesty --object_redshift={redshift} ' \
