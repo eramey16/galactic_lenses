@@ -130,11 +130,12 @@ def get_galaxy(ls_id, tag=None, engine=None):
             raise ValueError(f"Too many entries for LSID {ls_id}. Enter a tag.")
     
     gal_meta = bkdata.iloc[0]
-    if gal_meta.stage != 1:
-        raise ValueError(f"Stage is wrong for galaxy {ls_id}. Current stage: {gal_meta.stage}")
+    print(gal_meta)
+    if gal_meta['stage'] != 1:
+        raise ValueError(f"Stage is wrong for galaxy {ls_id}. Current stage: {gal_meta['stage']}")
     
     tbldata = pd.DataFrame(
-        conn.execute(text(f"SELECT * FROM {gal_meta.tbl_name} WHERE id={gal_meta.tbl_id}")))
+        conn.execute(text(f"SELECT * FROM {gal_meta['tbl_name']} WHERE id={gal_meta['tbl_id']}")))
     
     conn.close()
     
