@@ -22,6 +22,7 @@ import os
 import math
 
 import sqlalchemy
+from sqlalchemy import text
 import util
 import pickle
 import pandas as pd
@@ -117,7 +118,7 @@ def get_galaxy(ls_id, tag=None, engine=None):
     
     conn = engine.connect()
     
-    result = conn.execute(f"SELECT * FROM bookkeeping WHERE ls_id={ls_id}")
+    result = conn.execute(text(f"SELECT * FROM bookkeeping WHERE ls_id={ls_id}"))
     
     bkdata = pd.DataFrame(result)
     
@@ -133,7 +134,7 @@ def get_galaxy(ls_id, tag=None, engine=None):
         raise ValueError(f"Stage is wrong for galaxy {ls_id}. Current stage: {gal_meta.stage}")
     
     tbldata = pd.DataFrame(
-        conn.execute(f"SELECT * FROM {gal_meta.tbl_name} WHERE id={gal_meta.tbl_id}"))
+        conn.execute(text(f"SELECT * FROM {gal_meta.tbl_name} WHERE id={gal_meta.tbl_id}")))
     
     conn.close()
     
