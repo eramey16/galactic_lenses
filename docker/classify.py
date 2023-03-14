@@ -3,18 +3,15 @@ from dl import queryClient as qc, helpers
 from dl import authClient as ac
 from dl import storeClient as sc
 from dl.helpers.utils import convert
-from prospect.io.read_results import results_from
 from datetime import datetime
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix, roc_curve
 from sklearn.ensemble import GradientBoostingClassifier
-from xgboost import XGBClassifier
 import h5py
 import requests
 import random
 import datetime
-import random
 import argparse
 import glob
 import sys
@@ -30,8 +27,8 @@ import numpy as np
 
 import prospect.io.read_results as reader
 
-from psycopg2.extensions import register_adapter, AsIs
-register_adapter(np.int64, AsIs)
+# from psycopg2.extensions import register_adapter, AsIs
+# register_adapter(np.int64, AsIs)
 
 bands = ['g', 'r', 'z', 'w1', 'w2']
 trac_cols = ['ls_id', 'ra', 'dec', 'type'] \
