@@ -113,7 +113,7 @@ def get_galaxy(ls_id, tag=None, engine=None):
     """ Gets a galaxy and its data from the psql database """
     # Make a database connection
     if engine is None:
-        engine = sqlalchemy.create_engine(util.conn_string)
+        engine = sqlalchemy.create_engine(util.conn_string, poolclass=NullPool)
     
     conn = engine.connect()
     
@@ -177,7 +177,7 @@ def update_db(bkdata, gal_data, engine=None):
     """ Updates the database using the bookkeeping and galaxy data provided """
     # Make a database connection
     if engine is None:
-        engine = sqlalchemy.create_engine(util.conn_string)
+        engine = sqlalchemy.create_engine(util.conn_string, poolclass=NullPool)
     conn = engine.connect()
     
     bkdata = bkdata.iloc[0]
@@ -241,7 +241,7 @@ if __name__ == "__main__":
     basic_file = os.path.join(output_dir, f'{args.ls_id}.csv')
     
     # Sqlalchemy
-    engine = sqlalchemy.create_engine(util.conn_string)
+    engine = sqlalchemy.create_engine(util.conn_string, poolclass=NullPool)
     
     # Get dr9 data from the database
     bkdata, tbldata = get_galaxy(args.ls_id, engine=engine)

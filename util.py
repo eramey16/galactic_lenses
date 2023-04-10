@@ -15,6 +15,7 @@ from sqlalchemy import String, DateTime
 from sqlalchemy.types import BIGINT, FLOAT, REAL, VARCHAR, BOOLEAN, INT
 from sqlalchemy.sql import func
 from sqlalchemy.orm import declarative_base
+from sqlalchemy.pool import NullPool
 import prospect.io.read_results as reader
 
 Base = declarative_base()
@@ -315,7 +316,7 @@ def collect_all(path, db_name=None, lim=None):
         # db_cols.update({col: REAL for col in list(all_data.columns)[4:]})
         
         # Connect to database
-        engine = create_engine(conn_string)
+        engine = create_engine(conn_string, poolclass=NullPool)
         all_data.to_sql(db_name, engine, if_exists='append', index=False)
         
         # # Add primary key
@@ -388,7 +389,7 @@ def save_to_db(path, db_name, lim=None, delete=False):
         h5_files = h5_files[:lim]
     
     # Connect to database
-    engine = create_engine(conn_string)
+    engine = create_engine(conn_string, poolclass=NullPool)
     
     # Make new table if one doesn't exist
     with engine.connect() as conn:
@@ -434,7 +435,7 @@ def save_to_db(path, db_name, lim=None, delete=False):
 def read_table(db_name):
     """ Reads a pandas table in from a database """
     
-    engine = create_engine(conn_string)
+    engine = create_engine(conn_string, poolclass=NullPool)
     
     data = pd.read_sql(f"SELECT * from {db_name}", engine)
     
@@ -442,7 +443,7 @@ def read_table(db_name):
 
 def write_table(data, db_name, if_exists='append'):
     
-    engine = create_engine(conn_string)
+    engine = create_engine(conn_string, poolclass=NullPool)
     
     data.to_sql(db_name, engine, if_exists=if_exists, index=False)
     
