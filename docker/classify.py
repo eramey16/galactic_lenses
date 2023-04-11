@@ -20,6 +20,7 @@ import math
 
 import sqlalchemy
 from sqlalchemy import text
+from sqlalchemy.pool import NullPool
 import util
 import pickle
 import pandas as pd
