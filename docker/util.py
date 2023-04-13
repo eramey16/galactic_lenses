@@ -328,6 +328,11 @@ def collect_all(path, db_name=None, lim=None):
     else:
         return all_data
 
+def close_connections(engine):
+    with engine.connect() as conn:
+        conn.execute("SELECT pg_terminate_backend(pid) FROM pg_stat_get_activity(NULL::integer)" \
+                     " WHERE datid=(SELECT oid from pg_database where datname = 'lensed_db');")
+
 def setup_table(conn, table_name):
     """ Sets up a new database table if one does not exist """
     # Metadata object
