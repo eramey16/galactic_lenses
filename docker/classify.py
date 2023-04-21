@@ -118,6 +118,10 @@ def get_galaxy(ls_id, tag=None, engine=None):
     if engine is None:
         engine = sqlalchemy.create_engine(util.conn_string, poolclass=NullPool)
     
+    # Sleep first
+    sleeptime = 5 + 15*np.random.rand()
+    time.sleep(sleeptime)
+    
     # Set up loop
     tries = 0
     while tries<15:
@@ -193,6 +197,10 @@ def update_db(bkdata, gal_data, engine=None):
     # Make a database connection
     if engine is None:
         engine = sqlalchemy.create_engine(util.conn_string, poolclass=NullPool)
+    
+    # Sleep first
+    sleeptime = 5 + 15*np.random.rand()
+    time.sleep(sleeptime)
     
     while tries < 15:
         tries += 1
