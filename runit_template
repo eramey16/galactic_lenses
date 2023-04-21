@@ -6,6 +6,7 @@
 #SBATCH -N {} -c {}
 #SBATCH --licenses=cfs,SCRATCH
 #SBATCH --constraint={}
+#SBATCH --mail-type=BEGIN
 
 cd {}
 
