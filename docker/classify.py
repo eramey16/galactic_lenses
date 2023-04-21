@@ -17,10 +17,12 @@ import glob
 import sys
 import os
 import math
+import time
 
 import sqlalchemy
 from sqlalchemy import text
 from sqlalchemy.pool import NullPool
+from sqlalchemy.exc import OperationalError
 import util
 import pickle
 import pandas as pd
@@ -116,32 +118,44 @@ def get_galaxy(ls_id, tag=None, engine=None):
     if engine is None:
         engine = sqlalchemy.create_engine(util.conn_string, poolclass=NullPool)
     
-    conn = engine.connect()
-    
-    bkdata = pd.DataFrame(conn.execute(f"SELECT * FROM bookkeeping WHERE ls_id={ls_id}"))
-    
-    if bkdata.empty:
-        raise ValueError(f"No galaxy with LSID {ls_id} is present in the bookkeeping table")
-    elif len(bkdata)>1:
-        bkdata = bkdata[bkdata.tag==tag]
-        if len(bkdata)!=1:
-            raise ValueError(f"Too many entries for LSID {ls_id}. Enter a tag.")
-    
-    gal_meta = bkdata.iloc[0]
-    
-    print(gal_meta)
-    
-    if gal_meta['stage'] != 1:
-        raise ValueError(f"Stage is wrong for galaxy {ls_id}. Current stage: {gal_meta['stage']}")
-    
-    tbldata = pd.DataFrame(
-        conn.execute(f"SELECT * FROM {gal_meta['tbl_name']} WHERE id={gal_meta['tbl_id']}"))
-    
-    conn.close()
-    
-    print(tbldata)
-    
-    return bkdata, tbldata[util.dr9_cols]
+    # Set up loop
+    tries = 0
+    while tries<15:
+        tries+=1
+        
+        try: # Try to make a database connection
+            conn = engine.connect()
+            # Put in a try catch loop, sleep for a random time and try again if it doesn't work
+            bkdata = pd.DataFrame(conn.execute(f"SELECT * FROM bookkeeping WHERE ls_id={ls_id}"))
+
+            if bkdata.empty:
+                raise ValueError(f"No galaxy with LSID {ls_id} is present in the bookkeeping table")
+            elif len(bkdata)>1:
+                bkdata = bkdata[bkdata.tag==tag]
+                if len(bkdata)!=1:
+                    raise ValueError(f"Too many entries for LSID {ls_id}. Enter a tag.")
+
+            gal_meta = bkdata.iloc[0]
+
+            print(gal_meta)
+
+            if gal_meta['stage'] != 1:
+                raise ValueError(f"Stage is wrong for galaxy {ls_id}. Current stage: {gal_meta['stage']}")
+
+            tbldata = pd.DataFrame(
+                conn.execute(f"SELECT * FROM {gal_meta['tbl_name']} WHERE id={gal_meta['tbl_id']}"))
+
+            conn.close()
+
+            print(tbldata)
+
+            return bkdata, tbldata[util.dr9_cols]
+            
+        except OperationalError as e: # If too many connections, sleep and try again
+            sleeptime = 5 + 5*np.random.rand() # Sleep 5-10 seconds
+            print(f"Received Error {e}, sleeping {sleeptime} seconds and trying again.")
+            time.sleep(sleeptime)
+    raise ValueError("Could not connect to the database")
 
 def merge_prospector(dr9_data, h5_file=None):
     """ Collects prospector data on a galaxy and merges it with dr9 data """
@@ -179,24 +193,35 @@ def update_db(bkdata, gal_data, engine=None):
     # Make a database connection
     if engine is None:
         engine = sqlalchemy.create_engine(util.conn_string, poolclass=NullPool)
-    conn = engine.connect()
     
-    bkdata = bkdata.iloc[0]
-    gal_data = gal_data.iloc[0]
-    
-    data_tbl = util.setup_table(conn, bkdata.tbl_name)
-    
-    # Update galaxy table
-    db_cols = [col.name for col in util.db_cols][1:-1] # get usable columns of db
-    update_data = gal_data[db_cols]
-    stmt = data_tbl.update().where(data_tbl.c.id==1).values(**update_data)
-    conn.execute(stmt)
-    
-    # Update bookkeeping table
-    stmt = f"UPDATE bookkeeping SET stage = 2 WHERE id = {str(bkdata.id)}"
-    conn.execute(stmt)
-    
-    conn.close()
+    while tries < 15:
+        tries += 1
+        try:
+            conn = engine.connect()
+
+            bkdata = bkdata.iloc[0]
+            gal_data = gal_data.iloc[0]
+
+            data_tbl = util.setup_table(conn, bkdata.tbl_name)
+
+            # Update galaxy table
+            db_cols = [col.name for col in util.db_cols][1:-1] # get usable columns of db
+            update_data = gal_data[db_cols]
+            stmt = data_tbl.update().where(data_tbl.c.id==1).values(**update_data)
+            conn.execute(stmt)
+
+            # Update bookkeeping table
+            stmt = f"UPDATE bookkeeping SET stage = 2 WHERE id = {str(bkdata.id)}"
+            conn.execute(stmt)
+
+            conn.close()
+            return
+            
+        except OperationalError as e:
+            sleeptime = 5 + 5*np.random.rand() # Sleep 5-10 seconds
+            print(f"Received Error {e}, sleeping {sleeptime} seconds and trying again.")
+            time.sleep(sleeptime)
+    raise ValueError("Could not connect to the database")
 
 def run_prospector(ls_id, redshift, mags, mag_uncs, prosp_file=prosp_file):
     """ Runs prospector with provided parameters """
