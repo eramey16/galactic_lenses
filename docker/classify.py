@@ -143,8 +143,8 @@ def get_galaxy(ls_id, tag=None, engine=None):
 
             print(gal_meta)
 
-            if gal_meta['stage'] != 1:
-                raise ValueError(f"Stage is wrong for galaxy {ls_id}. Current stage: {gal_meta['stage']}")
+            # if gal_meta['stage'] != 1:
+            #     raise ValueError(f"Stage is wrong for galaxy {ls_id}. Current stage: {gal_meta['stage']}")
 
             tbldata = pd.DataFrame(
                 conn.execute(f"SELECT * FROM {gal_meta['tbl_name']} WHERE id={gal_meta['tbl_id']}"))
@@ -202,6 +202,7 @@ def update_db(bkdata, gal_data, engine=None):
     sleeptime = 5 + 15*np.random.rand()
     time.sleep(sleeptime)
     
+    tries = 0
     while tries < 15:
         tries += 1
         try:
@@ -230,6 +231,18 @@ def update_db(bkdata, gal_data, engine=None):
             print(f"Received Error {e}, sleeping {sleeptime} seconds and trying again.")
             time.sleep(sleeptime)
     raise ValueError("Could not connect to the database")
+
+def _fix_db(ls_id, data_dir='./', engine=None):
+    """ One-time function to fix the database after not uploading results """
+    if engine=None:
+        engine = sqlalchemy.create_engine(util.conn_string, poolclass=NullPool)
+    
+    bkdata, dr9_data = get_galaxy(ls_id)
+    print(dr9_data)
+    
+    gal_data = merge_prospector(dr9_data, h5_file=os.path.join(data_dir, str(ls_id)+'.h5'))
+    update_db(bkdata, gal_data, engine=engine)
+    
 
 def run_prospector(ls_id, redshift, mags, mag_uncs, prosp_file=prosp_file):
     """ Runs prospector with provided parameters """
