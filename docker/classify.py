@@ -58,7 +58,14 @@ prosp_file = 'photoz_hm_params_short_dpon_on.py'
 
 #given an RA and DEC, pull magnitudes, magnitude uncertainties, redshifts from NOAO
 
-print(sqlalchemy.__version__)
+import numpy
+from psycopg2.extensions import register_adapter, AsIs
+def addapt_numpy_float64(numpy_float64):
+    return AsIs(numpy_float64)
+def addapt_numpy_int64(numpy_int64):
+    return AsIs(numpy_int64)
+register_adapter(numpy.float64, addapt_numpy_float64)
+register_adapter(numpy.int64, addapt_numpy_int64)
 
 def query_galaxy(ra,dec,radius=0.0002777777778,data_type=None,limit=1):
     """Queries the NOAO Legacy Survey Data Release 8 Tractor and Photo-Z tables
@@ -141,8 +148,6 @@ def get_galaxy(ls_id, tag=None, engine=None):
 
             gal_meta = bkdata.iloc[0]
 
-            print(gal_meta)
-
             # if gal_meta['stage'] != 1:
             #     raise ValueError(f"Stage is wrong for galaxy {ls_id}. Current stage: {gal_meta['stage']}")
 
@@ -211,12 +216,18 @@ def update_db(bkdata, gal_data, engine=None):
             bkdata = bkdata.iloc[0]
             gal_data = gal_data.iloc[0]
 
-            data_tbl = util.setup_table(conn, bkdata.tbl_name)
-
             # Update galaxy table
             db_cols = [col.name for col in util.db_cols][1:-1] # get usable columns of db
-            update_data = gal_data[db_cols]
-            stmt = data_tbl.update().where(data_tbl.c.id==1).values(**update_data)
+            update_data = gal_data[db_cols].copy()
+            
+            # Assemble psql statement
+            stmt = f"UPDATE {bkdata.tbl_name} SET "
+            if 'type' in update_data: # string needs to be in quotes
+                update_data['type'] = f"'{update_data['type']}'"
+            stmt += ', '.join([f"{col} = {update_data[col]}" 
+                               for col in db_cols])
+            stmt += f" WHERE id = {bkdata.tbl_id}"
+            
             conn.execute(stmt)
 
             # Update bookkeeping table
@@ -232,15 +243,18 @@ def update_db(bkdata, gal_data, engine=None):
             time.sleep(sleeptime)
     raise ValueError("Could not connect to the database")
 
-def _fix_db(ls_id, data_dir='./', engine=None):
+def _fix_db(ls_id, data_dir='./', model_file='rf.model', engine=None):
     """ One-time function to fix the database after not uploading results """
-    if engine=None:
+    data_dir = os.path.expandvars(data_dir)
+    if engine==None:
         engine = sqlalchemy.create_engine(util.conn_string, poolclass=NullPool)
     
-    bkdata, dr9_data = get_galaxy(ls_id)
-    print(dr9_data)
+    bkdata, dr9_data = get_galaxy(ls_id, engine=engine)
     
     gal_data = merge_prospector(dr9_data, h5_file=os.path.join(data_dir, str(ls_id)+'.h5'))
+    pred = predict(gal_data, model_file=model_file)
+    gal_data['lensed'] = pred
+    
     update_db(bkdata, gal_data, engine=engine)
     
 

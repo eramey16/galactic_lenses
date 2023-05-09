@@ -8,15 +8,14 @@ import numpy as np
 import argparse
 import os
 import sys
-import util
 import sqlalchemy
 
+conn_string = 'postgresql+psycopg2://lensed_db_admin@nerscdb03.nersc.gov/lensed_db'
+
 ### String to repeat in taskfarmer file
-shft_cmd = "shifter --image=eramey16/monocle:latest" \
-" --volume='{}:/gradient_boosted/exports'" \
-" /opt/conda/bin/python /gradient_boosted/classify.py --ls_id={}"
-dest_filename = ["tasks", ".txt"]
-coord_filename = ["coords", "csv"]
+shft_cmd = "shifter --image=eramey16/monocle:latest --volume='{}:/gradient_boosted/exports' /opt/conda/bin/python /gradient_boosted/classify.py --ls_id={}"
+task_filename = ["tasks", ".txt"]
+coord_filename = ["coords", ".csv"]
 
 def process_tsv(file, dest):
     """ Processes a tsv file from the masterlens database """
@@ -37,10 +36,11 @@ def fill_tasks(gal_data, dest, tag=''):
     """ Fills in shifter tasks with the ra and dec info in file """
     # Read in galaxy file
     if isinstance(gal_data, str):
+        print(gal_data)
         if os.path.exists(file):
             galaxies = pd.read_csv(file)
         else:
-            print(f"No galaxy file found matching {gal_data}")
+            print("The galaxy file does not exist")
             sys.exit(1)
     else:
         galaxies = gal_data
@@ -53,7 +53,8 @@ def fill_tasks(gal_data, dest, tag=''):
         sys.exit(1)
     
     line = shft_cmd
-    if tag: line += f' --tag={tag}'
+    if tag:
+        line += f" --tag={tag}"
     
     # Format ra and dec into shifter commands
     tasks = [line.format(dest,ls_id) for ls_id in galaxies.ls_id]
@@ -62,7 +63,7 @@ def fill_tasks(gal_data, dest, tag=''):
     return tasks
 
 def fill_from_db(dest, tag=''):
-    engine = sqlalchemy.create_engine(util.conn_string)
+    engine = sqlalchemy.create_engine(conn_string)
     conn = engine.connect()
     
     query = f"SELECT * FROM bookkeeping WHERE stage=1"
@@ -76,7 +77,7 @@ def fill_from_db(dest, tag=''):
     
     return tasks
 
-def save_batches(tasks, n_batches, data_dir='.', dest_filename=dest_filename):
+def save_batches(tasks, n_batches, data_dir='.', dest_filename=task_filename):
     # if isinstance(tasks, list):
     #     tasks = pd.Series(tasks)
     if isinstance(dest_filename, str): dest_filename=dest_filename.split('.')
@@ -101,6 +102,47 @@ def save_batches(tasks, n_batches, data_dir='.', dest_filename=dest_filename):
 
         # Reset start
         start = end
+
+def prep_run(file=None, dest=None, tag='', radius=None, batch=None, masterlens=False):
+    # Check arguments
+    if dest is None:
+        if file is not None:
+            dest = os.path.dirname(file)
+        else:
+            dest = os.getcwd()
+    dest = os.path.expandvars(dest)
+    
+    # Check source file and destination folder
+    if file is not None and not os.path.isfile(file):
+        print(f"Source file does not exist: {file}")
+        sys.exit()
+    if not os.path.isdir(dest):
+        print(f"Destination folder does not exist or is not a directory: {dest}")
+        sys.exit()
+    
+    # Check for masterlens database flag
+    if masterlens:
+        # Get csv with just RA, DEC
+        radec = process_tsv(file, dest)
+        # Save file
+        filename = '.'.join(coord_filename)
+        filename = os.path.join(dest, filename)
+        radec.to_csv(filename, index=False)
+        print(f"File created: {filename}")
+        # Use new file for filling tasks
+        file = filename
+    
+    if file is not None: # Fill tasks from data in file
+        tasks = fill_tasks(file, dest, tag)
+    else: # Fill tasks from data in db
+        tasks = fill_from_db(dest, tag)
+    
+    
+    # Save in batches
+    if batch is not None:
+        save_batches(tasks, batch, data_dir=dest)
+    else:
+        raise ValueError("Non-batch saving not implemented")
     
 if __name__=='__main__':
     # Parse command line arguments
@@ -109,7 +151,7 @@ if __name__=='__main__':
                         help = "Indicates original file is a TSV from the masterlens database.")
     parser.add_argument("-f", "--file", type=str, default = None,
                         help = "Source file for target galaxies (must include RA and DEC).")
-    parser.add_argument("-d", "--dest", nargs='?', type=str, 
+    parser.add_argument("-d", "--dest", nargs='?', type=str, default=None,
                         help = "Destination folder for generated lens files.")
     parser.add_argument("-t", "--tag", nargs='?', type=str, default = '', 
                         help = "Tag for database lookup.")
@@ -118,47 +160,5 @@ if __name__=='__main__':
     parser.add_argument("-b", "--batch", nargs='?', type=int, help = "Number of batches")
     args = parser.parse_args()
     
-    # Check arguments
-    if args.dest is None:
-        if args.file is not None:
-            args.dest = os.path.dirname(args.file)
-        else:
-            args.dest = os.getcwd()
-    
-    # Check source file and destination folder
-    if args.file is not None and not os.path.isfile(args.file):
-        print(f"Source file does not exist: {args.file}")
-        sys.exit(1)
-    if not os.path.isdir(args.dest):
-        print(f"Destination folder does not exist or is not a directory: {args.dest}")
-        sys.exit(1)
-    
-    # Check for masterlens database flag
-    if args.masterlens:
-        # Get csv with just RA, DEC
-        radec = process_tsv(args.file, args.dest)
-        # Save file
-        filename = '.'.join(coord_filename)
-        filename = os.path.join(args.dest, filename)
-        radec.to_csv(filename, index=False)
-        print(f"File created: {filename}")
-        # Use new file for filling tasks
-        args.file = filename
-    
-    if args.file is not None: # Fill tasks from data in file
-        tasks = fill_tasks(args.file, args.dest, args.tag)
-    else: # Fill tasks from data in db
-        tasks = fill_from_db(args.dest, args.tag)
-    
-    
-    # Save in batches
-    if args.batch:
-        save_batches(tasks, args.batch, data_dir=args.dest)
-    else:
-        # Save to destination (tasks.txt)
-        filename = '.'.join(dest_filename)
-        dest = os.path.join(args.dest, filename)
-        tasks.to_csv(dest, sep='\t', header=False, index=False, quoting=3)
-    
-        print(f"File created: {dest}")
+    prep_run(**vars(args))
     

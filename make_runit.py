@@ -46,6 +46,8 @@ if __name__=='__main__':
     # Check arguments
     if args.dest is None:
         args.dest = os.getcwd()
+    else:
+        args.dest = os.path.expandvars(args.dest)
     
     # Make several runits
     if args.batch:

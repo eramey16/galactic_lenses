@@ -1,0 +1,14 @@
+#!/bin/bash
+#SBATCH -A m2218
+#SBATCH --image=eramey16/monocle:latest --volume="/pscratch/sd/e/eramey16/data/monocle/cosmos_160/:/gradient_boosted/exports"
+#SBATCH --qos=regular
+#SBATCH --time=12:00:00
+#SBATCH -N 20 -c 64
+#SBATCH --licenses=cfs,SCRATCH
+#SBATCH --constraint=cpu
+
+cd /pscratch/sd/e/eramey16/data/monocle/cosmos_160/
+
+export THREADS=32
+
+runcommands.sh tasks_0.txt
