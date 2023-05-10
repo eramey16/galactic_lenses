@@ -228,6 +228,11 @@ def update_db(bkdata, gal_data, engine=None):
                                for col in db_cols])
             stmt += f" WHERE id = {bkdata.tbl_id}"
             
+            if 'inf' in stmt:
+                stmt = stmt.replace('inf', "'infinity'")
+            if '-inf' in stmt:
+                stmt = stmt.replace('-inf', "'-infinity'")
+            
             conn.execute(stmt)
 
             # Update bookkeeping table
