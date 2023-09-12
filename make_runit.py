@@ -25,7 +25,7 @@ def make_runit(dest, time, nodes, cores,
                                    constraint, dest, taskfile)
     
     # Save resulting runit file
-    filename = os.path.join(dest, 'runit'+tag)
+    filename = os.path.join(dest, 'runit'+str(tag))
     with open(filename, 'w+') as file:
         file.write(runit_text)
         print(f"File created: {filename}")
@@ -35,7 +35,7 @@ if __name__=='__main__':
     parser = argparse.ArgumentParser(description="runit file for a taskfarmer job")
     parser.add_argument("-f", "--taskfile", type=str, help = "Name of taskfile for taskfarmer")
     parser.add_argument("-d", "--dest", type=str, help = "Destination folder for generated files")
-    parser.add_argument("-t", "--time", type=str, default = '04:00:00', help = "Time for job to run")
+    parser.add_argument("-t", "--time", type=str, default = '08:00:00', help = "Time for job to run")
     parser.add_argument("-N", "--nodes", type=str, default='15', help = "Number of nodes (>=2)")
     parser.add_argument("-c", "--cores", type=str, default='32', help = "Number of cores")
     parser.add_argument("-C", "--constraint", type=str, default='cpu', help = "Arch constraint")

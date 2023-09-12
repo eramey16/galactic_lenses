@@ -156,8 +156,6 @@ def get_galaxy(ls_id, tag=None, engine=None):
 
             conn.close()
 
-            print(tbldata)
-
             return bkdata, tbldata[util.dr9_cols]
             
         except OperationalError as e: # If too many connections, sleep and try again
