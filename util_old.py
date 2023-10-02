@@ -44,7 +44,7 @@ Base = declarative_base()
 #        ]
 
 # New updated columns
-bands = ['g', 'r', 'i', 'z', 'w1', 'w2']
+bands = ['g', 'r', 'z', 'w1', 'w2']
 trac_cols = ['ls_id', 'ra', 'dec', 'type'] \
             + ['dered_mag_'+b for b in bands] \
             + ['dered_flux_'+b for b in bands] \
@@ -58,7 +58,7 @@ trac_cols = ['ls_id', 'ra', 'dec', 'type'] \
             + ['shape_r_ivar', 'shape_e1_ivar', 'shape_e2_ivar']
 phot_z_cols = ['z_phot_median', 'z_phot_std', 'z_spec']
 
-query_cols = trac_cols+phot_z_cols
+dr9_cols = trac_cols+phot_z_cols
 
 theta_labels = ['dust2', 'tau', 'massmet_1', 'massmet_2', 'logtmax']
 
@@ -73,7 +73,7 @@ h5_cols = ['ls_id'] + \
         ['chisq_maggies']
 
 # Columns to use for ML ### TODO: fix these
-use_cols = ['g/r', 'i/z' 'r/i', 'r/z', 'w1/w2' 'z/w1', 'z_phot_median', 'chisq_maggies'] + \
+use_cols = ['g/r', 'r/z', 'r/w1', 'r/w2', 'z_phot_median', 'chisq_maggies'] + \
             [f"rchisq_{band}" for band in bands] + \
             [theta+"_med" for theta in theta_labels] + \
             [theta+"_sig_diff" for theta in theta_labels]
@@ -111,7 +111,7 @@ db_cols = [
     Column('ra', FLOAT),
     Column('dec', FLOAT),
     Column('type', VARCHAR(4)),
-    *[Column(col, FLOAT) for col in query_cols[4:]+h5_cols[1:]], # All other cols
+    *[Column(col, FLOAT) for col in dr9_cols[4:]+h5_cols[1:]], # All other cols
     Column('lensed', BOOLEAN),
     Column('id', BIGINT, primary_key=True, autoincrement=True)
 ]
@@ -259,11 +259,9 @@ def clean_and_calc(data, duplicates=False, filter_cols=filter_cols,
     if mode in ['all', 'dr9']:
         # Calculate colors
         data['g/r'] = data['dered_flux_g']/data['dered_flux_r']
-        data['i/z'] = data['dered_flux_i']/data['dered_flux_z']
-        data['r/i'] = data['dered_flux_r']/data['dered_flux_i'] 
         data['r/z'] = data['dered_flux_r']/data['dered_flux_z']
-        data['w1/w2'] = data['dered_flux_w1']/data['dered_flux_w2']
-        data['z/w1'] = data['dered_flux_z']/data['dered_flux_w2']
+        data['r/w1'] = data['dered_flux_r']/data['dered_flux_w1']
+        data['r/w2'] = data['dered_flux_r']/data['dered_flux_w2']
         
         # Uncertainties
         for b in bands:

@@ -33,7 +33,7 @@ import prospect.io.read_results as reader
 # from psycopg2.extensions import register_adapter, AsIs
 # register_adapter(np.int64, AsIs)
 
-bands = ['g', 'r', 'z', 'w1', 'w2']
+bands = ['g', 'r', 'i', 'z', 'w1', 'w2']
 trac_cols = ['ls_id', 'ra', 'dec', 'type'] \
             + ['dered_mag_'+b for b in bands] \
             + ['dered_flux_'+b for b in bands] \
@@ -55,6 +55,7 @@ input_dir = '/gradient_boosted/'
 # output_dir = '/global/cscratch1/sd/eramey16/gradient/' # Comment these two lines before pushing to docker
 # input_dir='/global/cscratch1/sd/eramey16/gradient/'
 prosp_file = 'photoz_hm_params_short_dpon_on.py'
+one_deg = 0.0002777777778 # degrees per arcsecond
 
 #given an RA and DEC, pull magnitudes, magnitude uncertainties, redshifts from NOAO
 
@@ -67,7 +68,19 @@ def addapt_numpy_int64(numpy_int64):
 register_adapter(numpy.float64, addapt_numpy_float64)
 register_adapter(numpy.int64, addapt_numpy_int64)
 
-def query_galaxy(ra,dec,radius=0.0002777777778,data_type=None,limit=1):
+def _sub_query(query):
+    # Send query to NOIRlab
+    try:
+        result = qc.query(sql=query) # result as string
+        data = convert(result, "pandas") # result as dataframe
+        return data
+    # Connection error(s) # Still going to fail when it's called and doesn't return data? TODO
+    except requests.exceptions.ConnectionError as e:
+        raise Exception(f"ConnectionError: {e}")
+    except qc.queryClientError as e:
+        raise Exception(f"Query Client Error: {e}")
+
+def query_galaxy(ra,dec,radius=one_deg,data_type=None,limit=1,save=None):
     """Queries the NOAO Legacy Survey Data Release 8 Tractor and Photo-Z tables
 
     Parameters:
@@ -88,8 +101,7 @@ def query_galaxy(ra,dec,radius=0.0002777777778,data_type=None,limit=1):
             it'll work.
     """
     # Set up basic query
-    query =[f"""SELECT {query_cols} FROM ls_dr9.tractor AS trac 
-    INNER JOIN ls_dr9.photo_z AS phot_z ON trac.ls_id = phot_z.ls_id 
+    query =[f"""SELECT {'brickid,brickname,'+','.join(trac_cols)} FROM ls_dr10.tractor AS trac
     WHERE (q3c_radial_query(ra,dec,{ra},{dec},{radius})) """,
     f""" ORDER BY q3c_dist({ra}, {dec}, trac.ra, trac.dec) ASC""",
     f""" LIMIT {limit}"""]
@@ -99,25 +111,28 @@ def query_galaxy(ra,dec,radius=0.0002777777778,data_type=None,limit=1):
     # Join full query
     query = ''.join(query)
     
-    # Send query to NOIRlab
-    try:
-        result10 = qc.query(sql=query) # result as string
-        data = convert(result10, "pandas") # result as dataframe
-        if data.empty:
-            raise ValueError(f"No objects within {radius} of {ra},{dec}")
-            
-        # Save to file
-        ls_id = int(data.ls_id[0])
-        basic_file = f"{output_dir}{ls_id}.csv"
-        data.to_csv(basic_file, index=False)
-        return data
-    # Connection error(s) # Still going to fail when it's called and doesn't return data? TODO
-    except requests.exceptions.ConnectionError as e:
-        return f"ConnectionError: {e} $\nOn RA:{ra},DEC:{dec}"
-    except qc.queryClientError as e:
-        with open("lensed_ordered_final.csv","a+") as f:
-            f.write(f"Error on:{ra},{dec}: {e}\n")
-        print(f"Query Client Error: {e} $\nRecorded on {ra},{dec} ")
+    trac_data = _sub_query(query)
+    if trac_data.empty:
+        raise ValueError(f"No objects within {radius/one_deg:.2f} arcsec of {ra},{dec}")
+    
+    for i,row in trac_data.iterrows():
+        ### Now pull the redshift data
+        query = [f"""SELECT {','.join(phot_z_cols)} 
+        FROM ls_dr9.photo_z AS phot_z 
+        INNER JOIN ls_dr9.tractor as trac on trac.ls_id = phot_z.ls_id
+        WHERE (q3c_radial_query(ra,dec,{row.ra},{row.dec},{radius})) """,
+        f""" ORDER BY q3c_dist({row.ra}, {row.dec}, trac.ra, trac.dec) ASC""",
+        f""" LIMIT 1"""]
+        query = ''.join(query)
+
+        z_data = _sub_query(query)
+        if z_data.empty:
+            raise ValueError(f"No redshift found for galaxy {z_data.ls_id}")
+        
+        trac_data.loc[i, phot_z_cols] = list(z_data[phot_z_cols].iloc[0])
+    
+    return trac_data
+    
 
 def get_galaxy(ls_id, tag=None, engine=None):
     """ Gets a galaxy and its data from the psql database """
@@ -295,20 +310,24 @@ if __name__ == "__main__":
     parser.add_argument("-r","--ra",type=float, help = "RA selection")
     parser.add_argument("-d","--dec",type=float, help="DEC selection")
     parser.add_argument("-rd", "--radius",type=float, default=0.0002777777778, help = "Radius for q3c radial query")
-    parser.add_argument("-t","--type",help="Object type to search for",type=str,choices=["DUP","DEV","EXP","REX","COMP","PSF"])
+    parser.add_argument("-s","--save",type=str,default=None, help="Database table to save result")
+    
+    # Start sqlalchemy engine
+    engine = sqlalchemy.create_engine(util.conn_string, poolclass=NullPool)
     
     # Parse arguments
     args = parser.parse_args()
     
+    if args.ls_id is not None:
+        bkdata, tbldata = get_galaxy(args.ls_id, engine=engine)
+    elif args.ra is not None and args.dec is not None:
+        query_galaxy(args.ra, args.dec, save=args.save)
+    else:
+        raise ValueError("User must provide either a valid LSID or values for RA and DEC.")
+    
     # Output file names
     h5_file = os.path.join(output_dir, f'{args.ls_id}.h5')
     basic_file = os.path.join(output_dir, f'{args.ls_id}.csv')
-    
-    # Sqlalchemy
-    engine = sqlalchemy.create_engine(util.conn_string, poolclass=NullPool)
-    
-    # Get dr9 data from the database
-    bkdata, tbldata = get_galaxy(args.ls_id, engine=engine)
     
     # Run/read prospector file and get full dataframe
     gal_data = merge_prospector(tbldata)
@@ -318,6 +337,7 @@ if __name__ == "__main__":
     gal_data['lensed'] = pred
     
     # Write output to database
-    update_db(bkdata, gal_data, engine=engine)
+    if save:
+        update_db(bkdata, gal_data, engine=engine)
     
     engine.dispose()

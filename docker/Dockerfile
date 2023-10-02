@@ -16,7 +16,7 @@ RUN conda install -c conda-forge emcee dynesty
 RUN python -m pip install astro-sedpy
 
 WORKDIR /
-ENV SPS_HOME /fsps/
+ENV SPS_HOME '/fsps'
 RUN git clone https://github.com/cconroy20/fsps.git
 RUN python -m pip install fsps
 
@@ -31,6 +31,8 @@ ADD classify.py gradient_boosted/classify.py
 ADD rf.model gradient_boosted/rf.model
 ADD photoz_hm_params_short_dpon_on.py gradient_boosted/photoz_hm_params_short_dpon_on.py
 ADD util.py gradient_boosted/util.py
+
+ENV PATH="${PATH}:/gradient_boosted"
 
 WORKDIR gradient_boosted
 WORKDIR exports

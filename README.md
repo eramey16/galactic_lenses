@@ -121,6 +121,8 @@ docker push eramey16/gradient
 shifterimg -v pull docker:eramey16/gradient:latest
 ```
 
+I have now started working with a new image: eramey16/monocle
+
 # Thanks to:
 * Peter Nugent
 * Ariel Goobar
