@@ -5,15 +5,6 @@ SHELL ["/bin/bash", "-c"]
 RUN apt-get update
 RUN apt-get install -y gfortran nano vim
 
-# ADD https://download.open-mpi.org/release/open-mpi/v5.0/openmpi-5.0.0.tar.bz2 .
-# RUN tar xf openmpi-5.0.0.tar.bz2 \
-#     && cd openmpi-5.0.0 \
-#     && ./configure --prefix=/ \
-#     && make -j4 all \
-#     && make install \
-#     && cd .. && rm -rf \
-#     openmpi-5.0.0 openmpi-5.0.0.tar.bz2 /tmp/*
-
 # Install astroconda
 RUN conda config --add channels http://ssb.stsci.edu/astroconda
 RUN conda install python ipython
@@ -36,14 +27,16 @@ RUN python -m pip install astro-prospector noaodatalab
 RUN conda install -c astropy astroquery corner
 RUN conda install sqlalchemy psycopg2 requests scikit-learn
 
-ADD classify.py gradient_boosted/classify.py
-ADD rf.model gradient_boosted/rf.model
-ADD photoz_hm_params_short_dpon_on.py gradient_boosted/photoz_hm_params_short_dpon_on.py
-ADD util.py gradient_boosted/util.py
+ADD classify.py /monocle/classify.py
+ADD rf.model /monocle/rf.model
+ADD photoz_hm_params_short_dpon_on.py /monocle/photoz_hm_params_short_dpon_on.py
+ADD util.py /monocle/util.py
+# ADD __init__.py /monocle/__init__.py
 
-ENV PATH="${PATH}:/gradient_boosted"
+# ENV PATH="${PATH}:/mycode"
+ENV PYTHONPATH="${PYTHONPATH}:/monocle"
 
-WORKDIR gradient_boosted
+WORKDIR /monocle
 WORKDIR exports
 
 WORKDIR ../../
