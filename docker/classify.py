@@ -35,6 +35,8 @@ import prospect.io.read_results as reader
 
 bands = ['g', 'r', 'i', 'z', 'w1', 'w2']
 trac_cols = ['ls_id', 'ra', 'dec', 'type'] \
+            + ['mag_'+b for b in bands] \
+            + ['flux_'+b for b in bands] \
             + ['dered_mag_'+b for b in bands] \
             + ['dered_flux_'+b for b in bands] \
             + ['snr_'+b for b in bands] \
@@ -55,7 +57,7 @@ input_dir = '/gradient_boosted/'
 # output_dir = '/global/cscratch1/sd/eramey16/gradient/' # Comment these two lines before pushing to docker
 # input_dir='/global/cscratch1/sd/eramey16/gradient/'
 prosp_file = 'photoz_hm_params_short_dpon_on.py'
-one_deg = 0.0002777777778 # degrees per arcsecond
+one_as = 0.0002777777778 # degrees per arcsecond
 
 #given an RA and DEC, pull magnitudes, magnitude uncertainties, redshifts from NOAO
 
@@ -80,7 +82,12 @@ def _sub_query(query):
     except qc.queryClientError as e:
         raise Exception(f"Query Client Error: {e}")
 
-def query_galaxy(ra,dec,radius=one_deg,data_type=None,limit=1,save=None):
+def send_query(where, cols=trac_cols, tbl='ls_dr10.tractor AS trac', extras=''):
+    query = f"SELECT {','.join(cols)} FROM {tbl} WHERE {where} {extras}"
+    data = _sub_query(query)
+    return data
+
+def query_galaxy(ra,dec,radius=one_as,cols=trac_cols,data_type=None,limit=1,save=None):
     """Queries the NOAO Legacy Survey Data Release 8 Tractor and Photo-Z tables
 
     Parameters:
@@ -101,7 +108,7 @@ def query_galaxy(ra,dec,radius=one_deg,data_type=None,limit=1,save=None):
             it'll work.
     """
     # Set up basic query
-    query =[f"""SELECT {'brickid,brickname,'+','.join(trac_cols)} FROM ls_dr10.tractor AS trac
+    query =[f"""SELECT {'brickid,brickname,objid,'+','.join(cols)} FROM ls_dr10.tractor AS trac
     WHERE (q3c_radial_query(ra,dec,{ra},{dec},{radius})) """,
     f""" ORDER BY q3c_dist({ra}, {dec}, trac.ra, trac.dec) ASC""",
     f""" LIMIT {limit}"""]
@@ -113,7 +120,7 @@ def query_galaxy(ra,dec,radius=one_deg,data_type=None,limit=1,save=None):
     
     trac_data = _sub_query(query)
     if trac_data.empty:
-        raise ValueError(f"No objects within {radius/one_deg:.2f} arcsec of {ra},{dec}")
+        raise ValueError(f"No objects within {radius/one_as:.2f} arcsec of {ra},{dec}")
     
     for i,row in trac_data.iterrows():
         ### Now pull the redshift data

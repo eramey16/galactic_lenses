@@ -46,6 +46,10 @@ Base = declarative_base()
 # New updated columns
 bands = ['g', 'r', 'i', 'z', 'w1', 'w2']
 trac_cols = ['ls_id', 'ra', 'dec', 'type'] \
+            + ['mag_'+b for b in bands] \
+            + ['flux_'+b for b in bands] \
+            + ['mag_'+b for b in bands] \
+            + ['flux_'+b for b in bands] \
             + ['dered_mag_'+b for b in bands] \
             + ['dered_flux_'+b for b in bands] \
             + ['snr_'+b for b in bands] \
@@ -250,7 +254,7 @@ def load_data(gal_results):
     return row
 
 def clean_and_calc(data, duplicates=False, filter_cols=filter_cols, 
-                   mode='all', cut_mag=False):
+                   mode='all', cut_mag=False, i_band=True):
     
     data = data.copy()
     filter_cols = [col for col in filter_cols if col in data.columns]
@@ -258,15 +262,20 @@ def clean_and_calc(data, duplicates=False, filter_cols=filter_cols,
     ### Filtering for DS9 data
     if mode in ['all', 'dr9']:
         # Calculate colors
-        data['g/r'] = data['dered_flux_g']/data['dered_flux_r']
-        data['i/z'] = data['dered_flux_i']/data['dered_flux_z']
-        data['r/i'] = data['dered_flux_r']/data['dered_flux_i'] 
-        data['r/z'] = data['dered_flux_r']/data['dered_flux_z']
-        data['w1/w2'] = data['dered_flux_w1']/data['dered_flux_w2']
-        data['z/w1'] = data['dered_flux_z']/data['dered_flux_w2']
+        data['g/r'] = -2.5*np.log10(data['dered_flux_g']/data['dered_flux_r'])
+        data['r/z'] = -2.5*np.log10(data['dered_flux_r']/data['dered_flux_z'])
+        data['w1/w2'] = -2.5*np.log10(data['dered_flux_w1']/data['dered_flux_w2'])
+        data['z/w1'] = -2.5*np.log10(data['dered_flux_z']/data['dered_flux_w2'])
+        
+        if i_band:
+            data['i/z'] = -2.5*np.log10(data['dered_flux_i']/data['dered_flux_z'])
+            data['r/i'] = -2.5*np.log10(data['dered_flux_r']/data['dered_flux_i'])
+            all_bands = bands
+        else:
+            all_bands = [b for b in bands if b!='i']
         
         # Uncertainties
-        for b in bands:
+        for b in all_bands:
             # data['unc_'+b] = 1 / data['snr_'+b]
             data['flux_sigma_'+b] = 1 / np.sqrt(data['flux_ivar_'+b])
         
