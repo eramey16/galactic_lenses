@@ -47,7 +47,7 @@ trac_cols = ['ls_id', 'ra', 'dec', 'type'] \
             + ['psfsize_g', 'psfsize_r', 'psfsize_z'] \
             + ['shape_r', 'shape_e1', 'shape_e2'] \
             + ['shape_r_ivar', 'shape_e1_ivar', 'shape_e2_ivar']
-phot_z_cols = ['z_phot_median', 'z_phot_std', 'z_spec']
+phot_z_cols = ['z_phot_median_i AS z_phot_median', 'z_phot_std_i AS z_phot_std', 'z_spec']
 all_cols = ['trac.'+col for col in trac_cols] + ['phot_z.'+col for col in phot_z_cols]
 
 query_cols = ', '.join(all_cols)
@@ -87,8 +87,9 @@ def send_query(where, cols=trac_cols, tbl='ls_dr10.tractor AS trac', extras=''):
     data = _sub_query(query)
     return data
 
-def query_galaxy(ra,dec,radius=one_as,cols=trac_cols,data_type=None,limit=1,save=None):
-    """Queries the NOAO Legacy Survey Data Release 8 Tractor and Photo-Z tables
+def query_galaxy(ra,dec,radius=one_as,cols=all_cols,trac_table="ls_dr10.tractor",phot_table="ls_dr10.photo_z_10p1",
+                 data_type=None,limit=1,save=None):
+    """Queries the NOAO Legacy Survey Data Release 10 Tractor and Photo-Z tables
 
     Parameters:
         ra (float,int): Right ascension (RA) used in the q3c radial query to NOAO
@@ -108,35 +109,42 @@ def query_galaxy(ra,dec,radius=one_as,cols=trac_cols,data_type=None,limit=1,save
             it'll work.
     """
     # Set up basic query
-    query =[f"""SELECT {'brickid,brickname,objid,'+','.join(cols)} FROM ls_dr10.tractor AS trac
-    WHERE (q3c_radial_query(ra,dec,{ra},{dec},{radius})) """,
-    f""" ORDER BY q3c_dist({ra}, {dec}, trac.ra, trac.dec) ASC""",
-    f""" LIMIT {limit}"""]
+    query =[f"""SELECT {'trac.brickid,trac.brickname,trac.objid,'+','.join(cols)} FROM {trac_table} AS trac """
+    f"""INNER JOIN {phot_table} as phot_z ON trac.ls_id=phot_z.ls_id """,
+    f"""WHERE (q3c_radial_query(ra,dec,{ra},{dec},{radius})) """,
+    f"""ORDER BY q3c_dist({ra}, {dec}, trac.ra, trac.dec) ASC """,
+    f"""LIMIT {limit}"""]
     # Add data type, if specified
     if data_type is not None:
         query.insert(1,f""" AND (type = '{data_type}') """)
     # Join full query
     query = ''.join(query)
     
+    # query =[f"""SELECT {'brickid,brickname,objid,'+','.join(cols)} FROM {trac_table} AS trac
+    # WHERE (q3c_radial_query(ra,dec,{ra},{dec},{radius})) """,
+    # f""" INNER JOIN {phot_table} as phot ON trac.ls_id==phot.ls_id """
+    # f""" ORDER BY q3c_dist({ra}, {dec}, trac.ra, trac.dec) """,
+    # f""" LIMIT {limit}"""]
+    
     trac_data = _sub_query(query)
     if trac_data.empty:
         raise ValueError(f"No objects within {radius/one_as:.2f} arcsec of {ra},{dec}")
     
-    for i,row in trac_data.iterrows():
-        ### Now pull the redshift data
-        query = [f"""SELECT {','.join(phot_z_cols)} 
-        FROM ls_dr9.photo_z AS phot_z 
-        INNER JOIN ls_dr9.tractor as trac on trac.ls_id = phot_z.ls_id
-        WHERE (q3c_radial_query(ra,dec,{row.ra},{row.dec},{radius})) """,
-        f""" ORDER BY q3c_dist({row.ra}, {row.dec}, trac.ra, trac.dec) ASC""",
-        f""" LIMIT 1"""]
-        query = ''.join(query)
+#     for i,row in trac_data.iterrows():
+#         ### Now pull the redshift data
+#         query = [f"""SELECT {','.join(phot_z_cols)} 
+#         FROM ls_dr9.photo_z AS phot_z 
+#         INNER JOIN ls_dr9.tractor as trac on trac.ls_id = phot_z.ls_id
+#         WHERE (q3c_radial_query(ra,dec,{row.ra},{row.dec},{radius})) """,
+#         f""" ORDER BY q3c_dist({row.ra}, {row.dec}, trac.ra, trac.dec) ASC""",
+#         f""" LIMIT 1"""]
+#         query = ''.join(query)
 
-        z_data = _sub_query(query)
-        if z_data.empty:
-            raise ValueError(f"No redshift found for galaxy {z_data.ls_id}")
+#         z_data = _sub_query(query)
+#         if z_data.empty:
+#             raise ValueError(f"No redshift found for galaxy {z_data.ls_id}")
         
-        trac_data.loc[i, phot_z_cols] = list(z_data[phot_z_cols].iloc[0])
+#         trac_data.loc[i, phot_z_cols] = list(z_data[phot_z_cols].iloc[0])
     
     return trac_data
     
