@@ -20,7 +20,7 @@ ENV SPS_HOME '/fsps'
 RUN git clone https://github.com/cconroy20/fsps.git
 RUN python -m pip install fsps
 
-RUN conda install -c conda-forge mpi mpi4py mpich six curl
+RUN conda install -c conda-forge mpi mpi4py mpich six curl schwimmbad
 
 RUN python -m pip install astro-prospector noaodatalab
 

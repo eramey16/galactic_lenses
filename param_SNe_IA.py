@@ -1,3 +1,20 @@
+import time, sys, os
+import numpy as np
+np.errstate(invalid='ignore')
+
+from prospect.models import model_setup
+from prospect.io import write_results
+from prospect import fitting
+from prospect.likelihood import lnlike_spec, lnlike_phot, write_log
+from dynesty.dynamicsampler import stopping_function, weight_function, _kld_error
+from dynesty.utils import *
+
+import mpi4py
+from schwimmbad import MPIPool
+
+mpi4py.rc.threads = False
+mpi4py.rc.recv_mprobe = False
+
 import numpy as np
 import os
 from pandas import read_csv
@@ -13,14 +30,8 @@ from prospect.models.sedmodel import PolySpecModel
 from prospect.models.sedmodel import SpecModel
 from astropy.cosmology import WMAP9
 
-
-# --------------
-# RUN_PARAMS
-# --------------
-
 run_params = {'verbose':True,
               'debug':False,
-              'outfile':'160411A',
               'output_pickles': False,
               # Optimization parameters
               'do_powell': False,
@@ -40,71 +51,28 @@ run_params = {'verbose':True,
               'zcontinuous': 1
               }
 
-# --------------
-# OBS
-# --------------
-def load_spec_csv(filename):
-    f = read_csv(filename, header=0, delimiter=',')
-    f.columns = ['wavelength', 'flux', 'err']
-    wave = np.array(f['wavelength'])
-    flux = np.array(f['flux'])
-    err = np.array(f['err'])
-    return wave, flux, err
+import argparse
 
+parser = argparse.ArgumentParser(description='Job array for Prospector.')
+parser.add_argument("--objname", help="Object number for redshift and photometry.", type=int)
+args = parser.parse_args()
 
+objid = args.objname
 
-def load_obs(spec = False, spec_file = None, maskspec=False,
-             phottable=None, luminosity_distance=0, snr=10, **kwargs):
-      
-    sdss = ['sdss_{}0'.format(b) for b in ['g','r','i','z']]
-    # twomass = ['twomass_J', 'twomass_Ks']
-    wise = ['wise_w1', 'wise_w2']
+host_data = read_csv('test_job_array.dat', names=['num', 'name', 'z', 'filters', 'maggies', 'maggies_unc'], delimiter='&')
+run_params['outfile'] = host_data['name'][objid].strip()
+print(run_params['outfile'])
 
-    filternames = sdss + wise
-    
-    # these are apparent magnitudes
-    # M_AB = np.array([25.188, 24.486, 24.149, 24.012, 23.147, 23.186])
-    # M_AB = np.array([20.144327, 18.742605, 18.173893, 17.796282, 17.236155, 17.585125]) # lensed
-    M_AB = np.array([19.971344, 19.177868, 18.76374, 18.528467, 18.416647, 18.769682]) # unlensed 0
-    # M_AB = np.array([21.09376, 19.217657, 18.627756, 18.26737, 17.619947, 18.067379]) # unlensed 1
-    # M_AB = np.array([20.236359, 19.436996, 19.097378, 18.961184, 19.060566, 19.395372]) # unlensed 2
-    # M_AB = np.array([20.318012, 19.460712, 19.242052, 18.899273, 18.731413, 18.698557]) # unlensed 3
-    # M_AB = np.array([20.495012, 19.463655, 19.104834, 18.858007, 19.064306, 19.506773]) # unlensed 4
-    # M_AB = np.array([20.144327, 18.742605, 18.173893, 17.796282, 17.236155, 17.585125]) # unlensed 5
-    # M_AB = np.array([20.549543, 19.614843, 19.333286, 19.18617, 19.001318, 19.85126]) # unlensed 6
-    # M_AB = np.array([20.919525, 19.745195, 19.335922, 19.031162, 19.161222, 19.519356]) # unlensed 7
-    # M_AB = np.array([19.572714, 18.49181, 18.074419, 17.809391, 17.733356, 17.90428]) # unlensed 8
-    # M_AB = np.array([21.386827, 20.1471, 19.703701, 19.40113, 19.419971, 20.451546]) # unlensed 9
-
-    # uncertainties in apparent magnitudes
-    # M_AB_unc = np.array([0.352, 0.135, 0.115, 0.206, 0.170, 0.236]) 
-    # M_AB_unc = np.array([0.00583267, 0.00240255, 0.00534675, 0.00156686, 0.00728733, # lensed
-    #    0.01758563])
-    M_AB_unc = np.array([0.00533879, 0.00345792, 0.01143685, 0.00278628, 0.01649121, 0.04711887]) # unlensed 0
-    # M_AB_unc = np.array([0.01595042, 0.00407315, 0.00991944, 0.0025198,  0.01003872, 0.0288243 ]) # unlensed 1
-    # M_AB_unc = np.array([0.00886786, 0.00620732, 0.02221301, 0.00576023, 0.029454, 0.08759248]) # unlensed 2
-    # M_AB_unc = np.array([0.00623631, 0.00381073, 0.01494266, 0.00341833, 0.0209946, 0.04275754]) # unlensed 3
-    # M_AB_unc = np.array([0.00702443, 0.00414651, 0.01185289, 0.00333568, 0.02748587, 0.08826594]) # unlensed 4
-    # M_AB_unc = np.array([0.00583267, 0.00240255, 0.00534675, 0.00156686, 0.00728733, 0.01758563]) # unlensed 5
-    # M_AB_unc = np.array([0.0293107,  0.01715418, 0.06768112, 0.01753395, 0.07083746, 0.29578818]) # unlensed 6
-    # M_AB_unc = [0.01310019, 0.00610606, 0.02076367, 0.00494169, 0.03313541, 0.09902748] # unlensed 7
-    # M_AB_unc = np.array([0.00545691, 0.00292408, 0.00911807, 0.00218623, 0.01165953, 0.02748346]) # unlensed 8
-    # M_AB_unc = np.array([0.01230493, 0.0053716,  0.01717679, 0.00400329, 0.03564853, 0.19995856]) # unlensed 9
-    
-    
-    
-    # convert from apparent magnitude to flux in maggies
-    mags = 10**(-0.4*M_AB)
-
-    # Find lower limits of mag uncertainty
-    mag_down = [x-y for (x,y) in zip(M_AB, M_AB_unc)]
-
-    # convert mag uncertainties to flux uncertainties
-    flux_down = [10**(-0.4*x) for x in mag_down]
-    flux_uncertainty = [y-x for (x,y) in zip(mags, flux_down)]
-
+def load_obs(obj_idx=objid, data=host_data, **kwargs):
+    # Read in data file  
+    # Grab correct filternames and photometry
+    filternames = eval(data['filters'][obj_idx])
+    mags = eval(data['maggies'][obj_idx])
+    flux_uncertainty = eval(data['maggies_unc'][obj_idx])
+       
     # Build output dictionary.
     obs = {}
+    
     # This is a list of sedpy filter objects.    See the
     # sedpy.observate.load_filters command for more details on its syntax.
     obs['filters'] = load_filters(filternames)
@@ -116,38 +84,13 @@ def load_obs(spec = False, spec_file = None, maskspec=False,
     # Here we mask out any NaNs or infs
     obs['phot_mask'] = np.isfinite(np.squeeze(mags))
     # Add in  spectrum.
+    obs['wavelength'] = None
+    obs['spectrum'] = None
+    obs['unc'] = None
     
-    if spec == True:
-        spec_wave, spec_fd, spec_fd_unc = load_spec_csv(spec_file)
-        
-        # Note - you may need to multiply spec_fd and spec_fd_unc by 1e-10 -> 1e-27
-        obs['wavelength'] = spec_wave
-        obs['spectrum'] = spec_fd*1e-21
-        obs['unc'] = spec_fd_unc*1e-21
-        
-        # Do you want to mask parts of the spectrum?
-        if maskspec == True: 
-                # Adding in mask of bad spectrum range
-            mask = []
-            for i in range(len(spec_wave)):
-                mask.append(True)
-            mask = np.array(mask)
-            bad_idx = np.where(spec_wave < 3000) 
-            mask[bad_idx] = False
-            bad_idx2 = np.where(spec_wave > 9800)
-            mask[bad_idx2] = False
-                  
-            obs['mask'] = mask
-            obs = fix_obs(obs)
-        
-    else:
-        obs['wavelength'] = None
-        obs['spectrum'] = None
-        obs['unc'] = None
-
     # Add in redshift
-    obs['redshift'] = None # put in a value
-    
+    obs['redshift'] = data['z'][obj_idx] # put in a value
+   
     return obs
 
 class MassMet(priors.Prior):
@@ -168,7 +111,7 @@ class MassMet(priors.Prior):
         upper_84 = np.interp(mass, self.massmet[:,0], self.massmet[:,3]) 
         lower_16 = np.interp(mass, self.massmet[:,0], self.massmet[:,2])
 
-        return (upper_84-lower_16)
+        return (upper_84-lower_16)/2 # DIVIDING BY 2 FOR LOCAL GALAXIES
 
     def loc(self,mass):
         return np.interp(mass, self.massmet[:,0], self.massmet[:,1])
@@ -252,9 +195,9 @@ class MassMet(priors.Prior):
         met = self.distribution.ppf(x[1], a, b, loc=self.loc(mass), scale=self.scale(mass))
         return np.array([mass,met])
     
+def to_dust1(dust1_fraction=None, dust1=None, dust2=None, **extras):
+    return dust1_fraction*dust2
 
-def dust2_to_dust1(dust2=None, **kwargs):
-    return dust2
 def massmet_to_mass(massmet=None, **extras):
     return 10**massmet[0]
 def massmet_to_logzol(massmet=None,**extras):
@@ -286,16 +229,16 @@ def load_gp(**extras):
 # MODEL_PARAMS
 # --------------
 
-def load_model(add_duste=False, opt_spec=False, smooth_spec = False,
-               add_dust1 = True, massmet = True, add_agn = False,
+def load_model(add_duste=True, opt_spec=False, smooth_spec = False,
+               massmet = True, add_agn = False,
                add_neb=True, luminosity_distance=None, **extras):
     
     model_params = TemplateLibrary["parametric_sfh"]
     
     #fixed values
     model_params["imf_type"]["init"] = 1 # Chabrier
-    model_params["dust_type"]["init"] = 2 #1 # Milky Way extinction law
-    model_params["sfh"]["init"] = 4 # delayed-tau 
+    model_params['dust_type']['init'] = 4 # Kriek and Conroy
+    model_params["sfh"]["init"] = 4 # non delayed-tau 
     model_params["logzsol"]["isfree"] = True
     model_params["tau"]["isfree"] = True
     model_params["dust2"]["isfree"] = True
@@ -317,22 +260,33 @@ def load_model(add_duste=False, opt_spec=False, smooth_spec = False,
     
     elif obs['redshift'] is None:
         model_params["zred"]['isfree'] = True
-        model_params["zred"]["prior"] = priors.TopHat(mini=0.3, maxi=3.0)
+        model_params["zred"]["prior"] = priors.TopHat(mini=0.1, maxi=2.0)
         model_params['tmax'] = {'N': 1,'isfree': True,'init': 0.5,
                                    'prior': priors.TopHat(mini=0, maxi=1.0)}
         
         model_params['tage']['isfree'] = False
         model_params['tage']['depends_on'] = tmax_to_tage
+
+
    
     # adjust priors
-    model_params["tau"]["prior"] = priors.LogUniform(mini=0.1, maxi=10.0)
-    model_params["dust2"]["prior"] = priors.TopHat(mini=0.0,maxi=3.0)
+    model_params["tau"]["prior"] = priors.LogUniform(mini=0.1, maxi=30.0)
     
-    
-    # Add dust1 - if star-forming or unknown galaxy type - set this on!
-    if add_dust1:
-        model_params['dust1'] = {'N':1, 'init':0.5, 'isfree':False,
-                                'depends_on': dust2_to_dust1}
+    model_params["dust2"]["prior"] = priors.ClippedNormal(mini=0.0, maxi=4.0, mean=0.3, sigma=1)
+    model_params["dust_index"] = {"N": 1, 
+                                  "isfree": True,
+                                  "init": 0.0, "units": "power-law multiplication of Calzetti",
+                                  "prior": priors.TopHat(mini=-1.0, maxi=0.4)}
+
+    model_params['dust1'] = {"N": 1, 
+                             "isfree": False, 
+                             'depends_on': to_dust1,
+                             "init": 0.0, "units": "optical depth towards young stars",
+                             "prior": None}
+    model_params['dust1_fraction'] = {'N': 1,
+                                      'isfree': True,
+                                      'init': 1.0,
+                                      'prior': priors.ClippedNormal(mini=0.0, maxi=2.0, mean=1.0, sigma=0.3)}
     
 
     # Add nebular emission parameters and turn nebular emission on
@@ -357,7 +311,7 @@ def load_model(add_duste=False, opt_spec=False, smooth_spec = False,
     # Adding massmet param - ALWAYS use! 
     if massmet:
         model_params['massmet'] = {"name": "massmet", "N": 2, "isfree": True, "init": [8.0, 0.0],
-                                   "prior": MassMet(z_mini=-1.0, z_maxi=0.19, mass_mini=7, mass_maxi=13)}
+                                   "prior": MassMet(z_mini=-1.2, z_maxi=0.3, mass_mini=6, mass_maxi=13)}
         model_params['mass']['isfree']=False
         model_params['mass']['depends_on']= massmet_to_mass
         model_params['logzsol']['isfree'] =False
@@ -366,12 +320,12 @@ def load_model(add_duste=False, opt_spec=False, smooth_spec = False,
     # Dust emission in FIR - use if you have well-sampled FIR region    
     if add_duste:
         model_params.update(TemplateLibrary["dust_emission"])
-        model_params["duste_gamma"]["isfree"] = True
-        model_params["duste_gamma"]["prior"] = priors.LogUniform(mini=0.001, maxi=0.15)
+        model_params["duste_gamma"]["isfree"] = False
+        #model_params["duste_gamma"]["prior"] = priors.LogUniform(mini=0.001, maxi=0.15)
         model_params["duste_qpah"]["isfree"] = True
         model_params["duste_qpah"]["prior"] = priors.TopHat(mini=0.5, maxi=7.0)
-        model_params["duste_umin"]["isfree"] = True
-        model_params["duste_umin"]["prior"] = priors.TopHat(mini=0.1,maxi=25)
+        model_params["duste_umin"]["isfree"] = False
+        #model_params["duste_umin"]["prior"] = priors.TopHat(mini=0.1,maxi=25)
     
     # Optical depth in MIR - use if you know an AGN exists or have IR-FIR data
     if add_agn:
@@ -413,3 +367,167 @@ def load_model(add_duste=False, opt_spec=False, smooth_spec = False,
         run_params["opt_spec"] = False
         
     return model
+
+
+# --------------
+# Globals
+# --------------
+# GP instances as global
+spec_noise, phot_noise = load_gp(**run_params)
+# Model as global
+global_model = load_model(**run_params)
+# Obs as global
+global_obs = load_obs(**run_params)
+# SPS Model instance as global
+sps = load_sps(**run_params)
+
+# Run SPS over sparse grid to get necessary data in cache/memory
+initial_theta_grid = np.around(np.arange(global_model.config_dict["logzsol"]['prior'].range[0], global_model.config_dict["logzsol"]['prior'].range[1], step=0.01), decimals=2)
+
+for theta_init in initial_theta_grid:
+    sps.ssp.params["sfh"] = global_model.params['sfh'][0]
+    sps.ssp.params["imf_type"] = global_model.params['imf_type'][0]
+    sps.ssp.params["logzsol"] = theta_init
+    sps.ssp._compute_csp()
+
+# -----------------
+# LnP function as global
+# ------------------
+
+def lnprobfn(theta, model=None, obs=None, verbose=run_params['verbose']):
+    """Given a parameter vector and optionally a dictionary of observational
+    ata and a model object, return the ln of the posterior. This requires that
+    an sps object (and if using spectra and gaussian processes, a GP object) be
+    instantiated.
+
+    :param theta:
+        Input parameter vector, ndarray of shape (ndim,)
+
+    :param model:
+        bsfh.sedmodel model object, with attributes including ``params``, a
+        dictionary of model parameters.  It must also have ``prior_product()``,
+        and ``mean_model()`` methods defined.
+
+    :param obs:
+        A dictionary of observational data.  The keys should be
+          *``wavelength``
+          *``spectrum``
+          *``unc``
+          *``maggies``
+          *``maggies_unc``
+          *``filters``
+          * and optional spectroscopic ``mask`` and ``phot_mask``.
+
+    :returns lnp:
+        Ln posterior probability.
+    """
+    if model is None:
+        model = global_model
+    if obs is None:
+        obs = global_obs
+
+    lnp_prior = model.prior_product(theta, nested=True)
+    if np.isfinite(lnp_prior):
+        # Generate mean model
+        try:
+            mu, phot, x = model.mean_model(theta, obs, sps=sps)
+        except(ValueError):
+            return -np.infty
+
+        # Noise modeling
+        if spec_noise is not None:
+            spec_noise.update(**model.params)
+        if phot_noise is not None:
+            phot_noise.update(**model.params)
+        vectors = {'spec': mu, 'unc': obs['unc'],
+                   'sed': model._spec, 'cal': model._speccal,
+                   'phot': phot, 'maggies_unc': obs['maggies_unc']}
+
+        # Calculate likelihoods
+        lnp_spec = lnlike_spec(mu, obs=obs, spec_noise=spec_noise, **vectors)
+        lnp_phot = lnlike_phot(phot, obs=obs, phot_noise=phot_noise, **vectors)
+
+        return lnp_phot + lnp_spec + lnp_prior
+    else:
+        return -np.infty
+
+
+def prior_transform(u, model=None):
+    if model is None:
+        model = global_model
+        
+    return model.prior_transform(u)
+
+
+def halt(message):
+    """Exit, closing pool safely.
+    """
+    print(message)
+    try:
+        pool.close()
+    except:
+        pass
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+
+    # --------------
+    # Setup
+    # --------------
+    rp = run_params
+    try:
+        rp['sps_libraries'] = sps.ssp.libraries
+    except(AttributeError):
+        rp['sps_libraries'] = None
+    # Use the globals
+    model = global_model
+    obs = global_obs
+    if rp.get('debug', False):
+        halt('stopping for debug')
+
+    # Try to set up an HDF5 file and write basic info to it
+    outroot = run_params['outfile']
+    odir = os.path.dirname(os.path.abspath(outroot))
+    if (not os.path.exists(odir)):
+        badout = 'Target output directory {} does not exist, please make it.'.format(odir)
+        halt(badout)
+
+    # -------
+    # Sample
+    # -------
+    if rp['verbose']:
+        print('dynesty sampling...')
+    tstart = time.time()  # time it
+    with MPIPool() as pool:
+        if not pool.is_master():
+            pool.wait()
+            sys.exit(0)
+        nprocs = pool.size
+
+        dynestyout = fitting.run_dynesty_sampler(lnprobfn, prior_transform, model.ndim,
+                                                 pool=pool, queue_size=nprocs, 
+                                                 stop_function=stopping_function,
+                                                 wt_function=weight_function,
+                                                 **rp)
+    ndur = time.time() - tstart
+    print('done dynesty in {0}s'.format(ndur))
+
+    # -------------------------
+    # Output HDF5 (and pickles if asked for)
+    # -------------------------
+    if rp.get("output_pickles", False):
+        # Write the dynesty result object as a pickle
+        import pickle
+        with open(outroot + '_dns.pkl', 'w') as f:
+            pickle.dump(dynestyout, f)
+    
+        # Write the model as a pickle
+        partext = write_results.paramfile_string(**rp)
+        write_results.write_model_pickle(outroot + '_model', model, powell=None,
+                                         paramfile_text=partext)
+    
+    # Write HDF5
+    hfile = outroot + '_mcmc.h5'
+    write_results.write_hdf5(hfile, rp, model, obs, dynestyout,
+                             None, tsample=ndur)

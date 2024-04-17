@@ -1,0 +1,19 @@
+#!/bin/bash
+#SBATCH --account=m2218  ## YOUR ACCOUNT pXXXX or bXXXX
+#SBATCH --array=0-4 ##83 number of jobs to run "in parallel" 
+#SBATCH --nodes=1 ## how many computers do you need
+#SBATCH --ntasks=20 ## how many cpus or processors do you need on each computer
+#SBATCH --time=12:00:00 ## how long does this need to run (remember different partitions have restrictions on this param)
+#SBATCH --job-name="prospector_sn_\${SLURM_ARRAY_TASK_ID}" ## use the task id in the name of the job
+#SBATCH --output=prospector_sn_.%A_%a.out ## use the jobid (A) and the specific job index (a) to name your log file
+
+export OMP_NUM_THREADS=1
+
+module load python
+source activate myprospector
+
+export SPS_HOME=$HOME/fsps
+
+echo Prospector is running with ${SLURM_NTASKS} MPI tasks
+
+mpirun -np ${SLURM_NTASKS} python param_SNe_IA.py --objname ${SLURM_ARRAY_TASK_ID}

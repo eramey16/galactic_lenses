@@ -8,8 +8,8 @@ import sedpy
 import h5py, astropy
 import numpy as np
 import pandas as pd
-import classify
-import util
+# import classify
+# import util
 from dl import queryClient as qc, helpers
 from dl.helpers.utils import convert
 
@@ -22,7 +22,14 @@ from prospect.models import SpecModel
 from prospect.models.transforms import tage_from_tuniv
 from prospect.models.templates import TemplateLibrary
 from prospect.models import priors
+from prospect.sources import CSPSpecBasis
+from prospect.likelihood import lnlike_spec, lnlike_phot, write_log
+from dynesty.dynamicsampler import stopping_function, weight_function, _kld_error
+from prospect.fitting import fit_model
+from prospect import fitting
 from scipy.stats import truncnorm
+
+from dynesty.dynamicsampler import stopping_function, weight_function, _kld_error
 
 # Get galaxy data
 bands = ['g', 'r', 'i', 'z', 'w1', 'w2']
@@ -48,6 +55,32 @@ unlensed = {
 }
 
 gal = iptf16
+
+# --------------
+# RUN_PARAMS
+# --------------
+
+run_params = {'verbose':True,
+              'debug':False,
+              'outfile':'160411A',
+              'output_pickles': False,
+              # Optimization parameters
+              'do_powell': False,
+              'ftol':3e-16, 'maxfev': 5000,
+              'do_levenburg': False,
+              'nmin': 5,
+              # dynesty Fitter parameters
+              'nested_bound': 'multi', # bounding method
+              'nested_sample': 'rwalk', # sampling method
+              'nested_nlive_init': 500,
+              'nested_nlive_batch': 500,
+              'nested_bootstrap': 0,
+              'nested_dlogz_init': 0.05,
+              'nested_weight_kwargs': {"pfrac": 1.0},
+              'nested_stop_kwargs': {"post_thresh": 0.1}, # Getting an error here
+              # SPS parameters
+              'zcontinuous': 1
+              }
 
 class MassMet(priors.Prior):
     """A Gaussian prior designed to approximate the Gallazzi et al. 2005 
@@ -79,7 +112,7 @@ class MassMet(priors.Prior):
         return [a, b]
 
     @property
-
+    
     def range(self):
         return ((self.params['mass_mini'], self.params['mass_maxi']),\
 
@@ -151,9 +184,11 @@ class MassMet(priors.Prior):
         met = self.distribution.ppf(x[1], a, b, loc=self.loc(mass), scale=self.scale(mass))
         return np.array([mass,met])
 
-def load_model(**run_params):
+def load_model(add_duste=False, opt_spec=False, smooth_spec = False,
+               add_dust1 = True, massmet = True, add_agn = False,
+               add_neb=True, luminosity_distance=None, obs=None, **extras):
     
-    model_params = TemplateLibrary["continuity_flex_sfh"]
+    model_params = TemplateLibrary["parametric_sfh"]
     
     #fixed values
     model_params["imf_type"]["init"] = 1 # Chabrier
@@ -164,35 +199,220 @@ def load_model(**run_params):
     model_params["dust2"]["isfree"] = True
     model_params["tage"]["isfree"] = True
     model_params["mass"]["isfree"]= True
+    
+    # Don't fit redshift (see original to change)
+    model_params["zred"]['isfree'] = False
+    model_params["zred"]['init'] = obs['redshift']
 
-def build(maggies, maggies_unc, object_redshift, **run_params):
+    # Find max age of the universe at this redshift
+    tage_max = tage_from_tuniv(zred=obs['redshift'], tage_tuniv=1.0)
+
+    # Set tage range
+    model_params["tage"]["prior"] = priors.TopHat(mini=0.0, maxi=tage_max)
+    # gives you tage parameter (lookback time)
+    # Can get post-processing stuff to convert to the age of the galaxy (mass-weighted age)
+    
+    # adjust priors
+    model_params["tau"]["prior"] = priors.LogUniform(mini=0.1, maxi=10.0)
+    # related to SFH - delayed tau SFH
+    
+    model_params["dust2"]["prior"] = priors.TopHat(mini=0.0,maxi=3.0)
+    # Expect more dust attenuation from young stellar populations than old
+    # Add dust1 - if star-forming or unknown galaxy type - set this on!
+    if add_dust1: # Automatically 1/2 of dust2 since init is 0.5
+        model_params['dust1'] = {'N':1, 'init':0.5, 'isfree':False,
+                                'depends_on': dust2_to_dust1}
+    # Total dust attenuation = 1.5*dust2 value (report in paper)
+    
+    # Add nebular emission parameters and turn nebular emission on
+    if add_neb: # ALWAYS use!
+        model_params.update(TemplateLibrary["nebular"])
+        
+        if opt_spec: # Do you have a spectrum? # fitting gas-phase metallicity
+            model_params['nebemlineinspec']['init'] = True
+            model_params['gas_logu'] = {'N':1, 'init': -2, 'isfree':True,
+                                        'prior': priors.TopHat(mini=-4, maxi=-1), 'units': 'Q_H/N_H'}
+            model_params['gas_logz'] = {'N':1, 'init': 0.0, 'units': 'log Z/Z_\\odot', 'depends_on': gas_logz,
+                                        'isfree':True, 'prior': priors.TopHat(mini=-2.0, maxi=0.5)}
+        
+            model_params['gas_logu']['isfree'] = True
+            model_params['gas_logz']['isfree'] = True
+        else: # my case
+            model_params['nebemlineinspec']['init'] = False
+            model_params['gas_logu']['isfree'] = False
+            model_params['gas_logz']['isfree'] = False # making these false sets to solar metallicity
+            
+    
+    # Adding massmet param - ALWAYS use! 
+    if massmet:
+        model_params['massmet'] = {"name": "massmet", "N": 2, "isfree": True, "init": [8.0, 0.0],
+                                   "prior": MassMet(z_mini=-1.0, z_maxi=0.19, mass_mini=7, mass_maxi=13)}
+        model_params['mass']['isfree']=False
+        model_params['mass']['depends_on']= massmet_to_mass
+        model_params['logzsol']['isfree'] =False
+        model_params['logzsol']['depends_on']=massmet_to_logzol
+        # Useful in the case we have photometry / limited photometry
+        # picks the metallicity first and then samples from the bounds for mass calculated from this
+        # massmet_1 is mass formed within galaxy (see equation for mass formed -> stellar mass)
+    
+    
+    if opt_spec: # not on by default - we don't have spectra
+        model_params.update(TemplateLibrary["optimize_speccal"])
+        # fit for normalization of spectrum
+        model_params['spec_norm'] = {'N': 1,'init': 1.0,'isfree': True,'prior': 
+                                     priors.Normal(sigma=0.2, mean=1.0), 'units': 'f_true/f_obs'}
+        # Increase the polynomial size to 12
+        model_params['polyorder'] = {'N': 1, 'init': 6,'isfree': False}
+        
+        run_params["opt_spec"] = True
+    
+        # Now instantiate the model using this new dictionary of parameter specifications
+        model = PolySpecModel(model_params)
+        
+        if smooth_spec:
+            # Note that if you're using this method, you'll be optimizing "spec_norm" rather than fitting for it 
+            model_params['spec_norm'] = {'N': 1,'init': 1.0,'isfree': False,'prior': 
+                                         priors.Normal(sigma=0.2, mean=1.0), 'units': 'f_true/f_obs'}
+            # Increase the polynomial size to 12
+            model_params.update(TemplateLibrary['spectral_smoothing'])
+            model_params["sigma_smooth"]["prior"] = priors.TopHat(mini=40.0, maxi=400.0)
+            
+            # This matches the continuum in the model spectrum to the continuum in the observed spectrum.
+            # Highly recommend using when modeling both photometry & spectroscopy
+            model_params.update(TemplateLibrary['optimize_speccal'])
+            
+    elif opt_spec == False:
+        model = SpecModel(model_params)
+        run_params["opt_spec"] = False
+    
+    return model
+
+def load_obs(spec = False, spec_file = None, maskspec=False, phottable=None,
+             luminosity_distance=0, snr=10, args={}, **kwargs):
     filters = load_filters(filternames)
+    
+    if 'mag_in' not in args or args.mag_in is None:
+        raise ValueError("--mag_in must be passed as an argument")
+    if 'mag_unc_in' not in args or args.mag_unc_in is None:
+        raise ValueError("--mag_unc_in must be passed as an argument")
+    
+    M_AB = np.array([float(x) for x in args.mag_in.strip('[]').split(',')])
+    maggies = np.array(10**(-.4*M_AB))
+    magerr = np.array([float(x) for x in args.mag_unc_in.strip('[]').split(',')])
+    magerr = np.clip(magerr, 0.05, np.inf)
+    maggies_unc = magerr * maggies / 1.086
+    
+    # Redshift
+    if 'object_redshift' in args:
+        z = args.object_redshift
+    else: z = None
 
     # Build obs
-    obs = dict(wavelength=None, spectrum=None, unc=None, redshift=object_redshift,
+    obs = dict(wavelength=None, spectrum=None, unc=None, redshift=z,
                maggies=maggies, maggies_unc=maggies_unc, filters=filters)
     obs["phot_wave"] = [f.wave_effective for f in obs["filters"]]
-    obs = fix_obs(obs)
-    print(obs)
-
-    # Build model
-    # model_params = TemplateLibrary["parametric_sfh"]
-    model_params = TemplateLibrary['continuity_flex_sfh']
-    model_params.update(TemplateLibrary["nebular"])
-    model_params["zred"]["init"] = obs["redshift"]
-
-    model = SpecModel(model_params)
-    noise_model = (None, None)
-
-    print(model)
-
-    # from prospect.sources import CSPSpecBasis
-    from prospect.sources import FastStepBasis
-    # sps = CSPSpecBasis(zcontinuous=1)
-    sps = FastStepBasis(zcontinuous=1)
-    print(sps.ssp.libraries)
+    obs['phot_mask'] = np.isfinite(np.squeeze(maggies))
+    # obs = fix_obs(obs)
     
-    return obs, model, sps, noise_model
+    obs['wavelength'] = None
+    obs['spectrum'] = None
+    obs['unc'] = None
+    
+    print(obs)
+    return(obs)
+
+def dust2_to_dust1(dust2=None, **kwargs):
+    return dust2
+def massmet_to_mass(massmet=None, **extras):
+    return 10**massmet[0]
+def massmet_to_logzol(massmet=None,**extras):
+    return massmet[1]
+def gas_logz(gas_logz=None, **kwargs):
+    return gas_logz
+def tmax_to_tage(tmax=None,zred=None,**kwargs):
+    return WMAP9.age(zred).value*(tmax) # in Gyr
+
+def load_sps(zcontinuous=1, compute_vega_mags=False, **extras):
+    sps = CSPSpecBasis(zcontinuous=zcontinuous,
+                       compute_vega_mags=compute_vega_mags)
+    print(sps.ssp.libraries)
+    return sps
+
+def load_gp(**extras):
+    return None, None
+
+# -----------------
+# LnP function as global
+# ------------------
+
+def lnprobfn(theta, model=None, obs=None, verbose=run_params['verbose']):
+    """Given a parameter vector and optionally a dictionary of observational
+    ata and a model object, return the ln of the posterior. This requires that
+    an sps object (and if using spectra and gaussian processes, a GP object) be
+    instantiated.
+
+    :param theta:
+        Input parameter vector, ndarray of shape (ndim,)
+
+    :param model:
+        bsfh.sedmodel model object, with attributes including ``params``, a
+        dictionary of model parameters.  It must also have ``prior_product()``,
+        and ``mean_model()`` methods defined.
+
+    :param obs:
+        A dictionary of observational data.  The keys should be
+          *``wavelength``
+          *``spectrum``
+          *``unc``
+          *``maggies``
+          *``maggies_unc``
+          *``filters``
+          * and optional spectroscopic ``mask`` and ``phot_mask``.
+
+    :returns lnp:
+        Ln posterior probability.
+    """
+
+    lnp_prior = model.prior_product(theta, nested=True)
+    if np.isfinite(lnp_prior):
+        # Generate mean model
+        try:
+            mu, phot, x = model.mean_model(theta, obs, sps=sps)
+        except(ValueError):
+            return -np.infty
+
+        # Noise modeling
+        if spec_noise is not None:
+            spec_noise.update(**model.params)
+        if phot_noise is not None:
+            phot_noise.update(**model.params)
+        vectors = {'spec': mu, 'unc': obs['unc'],
+                   'sed': model._spec, 'cal': model._speccal,
+                   'phot': phot, 'maggies_unc': obs['maggies_unc']}
+
+        # Calculate likelihoods
+        lnp_spec = lnlike_spec(mu, obs=obs, spec_noise=spec_noise, **vectors)
+        lnp_phot = lnlike_phot(phot, obs=obs, phot_noise=phot_noise, **vectors)
+
+        return lnp_phot + lnp_spec + lnp_prior
+    else:
+        return -np.infty
+
+
+def prior_transform(u, model=None):
+        
+    return model.prior_transform(u)
+
+
+def halt(message):
+    """Exit, closing pool safely.
+    """
+    print(message)
+    try:
+        pool.close()
+    except:
+        pass
+    sys.exit(0)
 
 if __name__=='__main__':
     
@@ -204,27 +424,22 @@ if __name__=='__main__':
     
     args = parser.parse_args()
     
-    if args.mag_in is None:
-        gal_data = classify.query_galaxy(ra=gal['ra'], dec=gal['dec'])
-        gal_data = util.clean_and_calc(gal_data, mode='dr9').iloc[0]
-        print(gal_data)
-        maggies = np.array([10**(-.4*gal_data['dered_mag_'+b]) for b in bands])
-        magerr = 2.5 / np.log(10) / np.array([gal_data['snr_'+b] for b in bands])
-        magerr = np.clip(magerr, 0.05, np.inf)
-        maggies_unc = magerr * maggies / 1.086
-        z = gal_data['z_phot_median']
-        
-    else:
-        M_AB = np.array([float(x) for x in args.mag_in.strip('[]').split(',')])
-        maggies = np.array(10**(-.4*M_AB))
-        magerr = np.array([float(x) for x in args.mag_unc_in.strip('[]').split(',')])
-        magerr = np.clip(magerr, 0.05, np.inf)
-        z = args.object_redshift
-        maggies_unc = magerr * maggies / 1.086
-
+    spec_noise, phot_noise = load_gp(**run_params)
+    obs = load_obs(args=args, **run_params)
+    model = load_model(obs=obs, **run_params)
+    sps = load_sps(**run_params)
+    noise_model = (spec_noise, phot_noise)
     
-    obs, model, sps, noise_model = build(maggies, maggies_unc, z)
+    initial_theta_grid = np.around(np.arange(model.config_dict["logzsol"]['prior'].range[0], 
+                                model.config_dict["logzsol"]['prior'].range[1], step=0.01), decimals=2)
     
+    for theta_init in initial_theta_grid:
+        sps.ssp.params["sfh"] = model.params['sfh'][0]
+        sps.ssp.params["imf_type"] = model.params['imf_type'][0]
+        sps.ssp.params["logzsol"] = theta_init
+        sps.ssp._compute_csp()
+    
+    # Set up mpi
     try:
         import mpi4py
         from mpi4py import MPI
@@ -242,29 +457,35 @@ if __name__=='__main__':
         print(f'Message: {e}')
         withmpi = False
 
-    # Evaluate SPS over logzsol grid in order to get necessary data in cache/memory
-    # for each MPI process. Otherwise, you risk creating a lag between the MPI tasks
-    # caching data depending which can slow down the parallelization
-    if (withmpi) & ('logzsol' in model.free_params):
-        dummy_obs = dict(filters=None, wavelength=None)
+#     # Evaluate SPS over logzsol grid in order to get necessary data in cache/memory
+#     # for each MPI process. Otherwise, you risk creating a lag between the MPI tasks
+#     # caching data depending which can slow down the parallelization
+#     if (withmpi) & ('logzsol' in model.free_params):
+#         dummy_obs = dict(filters=None, wavelength=None)
 
-        logzsol_prior = model.config_dict["logzsol"]['prior']
-        lo, hi = logzsol_prior.range
-        logzsol_grid = np.around(np.arange(lo, hi, step=0.1), decimals=2)
+#         logzsol_prior = model.config_dict["logzsol"]['prior']
+#         lo, hi = logzsol_prior.range
+#         logzsol_grid = np.around(np.arange(lo, hi, step=0.1), decimals=2)
 
-        sps.update(**model.params)  # make sure we are caching the correct IMF / SFH / etc
-        for logzsol in logzsol_grid:
-            model.params["logzsol"] = np.array([logzsol])
-            _ = model.predict(model.theta, obs=dummy_obs, sps=sps)
+#         sps.update(**model.params)  # make sure we are caching the correct IMF / SFH / etc
+#         for logzsol in logzsol_grid:
+#             model.params["logzsol"] = np.array([logzsol])
+#             _ = model.predict(model.theta, obs=dummy_obs, sps=sps)
 
-    # ensure that each processor runs its own version of FSPS
-    # this ensures no cross-over memory usage
-    from prospect.fitting import lnprobfn, fit_model
-    from functools import partial
-    lnprobfn_fixed = partial(lnprobfn, sps=sps)
+    # # ensure that each processor runs its own version of FSPS
+    # # this ensures no cross-over memory usage
+    # from prospect.fitting import lnprobfn, fit_model
+    # from functools import partial
+    # lnprobfn_fixed = partial(lnprobfn, sps=sps)
+    
+    run_params['nested_stop_kwargs'] = {"post_thresh": 0.1}
+    def new_lnfn(x):
+        return lnprobfn(x, model=model, obs=obs)
+    def new_prior(u):
+        return prior_transform(u, model=model)
 
     if withmpi:
-        # run_params["using_mpi"] = True
+        run_params["using_mpi"] = True
         with MPIPool() as pool:
 
             # The dependent processes will run up to this point in the code
@@ -273,20 +494,27 @@ if __name__=='__main__':
                 sys.exit(0)
             nprocs = pool.size
             # The parent process will oversee the fitting
-            fitting_kwargs = dict(nlive_init=400, nested_method="rwalk", nested_target_n_effective=1000, nested_dlogz_init=0.05)
-            output = fit_model(obs, model, sps, noise=noise_model, pool=pool, queue_size=nprocs, 
-                               lnprobfn=lnprobfn_fixed, using_mpi=True, **fitting_kwargs)
+            run_params.update(dict(nlive_init=400, nested_method="rwalk", 
+                                   nested_target_n_effective=1000, nested_dlogz_init=0.05))
+            output = fitting.run_dynesty_sampler(new_lnfn, new_prior, model.ndim,
+                                                 pool=pool, queue_size=nprocs, 
+                                                 stop_function=stopping_function,
+                                                 wt_function=weight_function,
+                                                 **run_params)
     else:
-        fitting_kwargs = dict(nlive_init=400, nested_method="rwalk", nested_target_n_effective=1000, nested_dlogz_init=0.05)
-        output = fit_model(obs, model, sps, optimize=False, dynesty=True, lnprobfn=lnprobfn, 
-                           noise=noise_model, **fitting_kwargs)
+        run_params.update(dict(nlive_init=400, nested_method="rwalk", 
+                               nested_target_n_effective=1000, nested_dlogz_init=0.05))
+        output = fitting.run_dynesty_sampler(new_lnfn, new_prior, model.ndim, 
+                                                 stop_function=stopping_function,
+                                                 wt_function=weight_function,
+                                                 **run_params)
 
-    result, duration = output["sampling"]
+    print(output)
 
     from prospect.io import write_results as writer
     hfile = args.outfile+'.h5'
     writer.write_hdf5(hfile, {}, model, obs,
-                     output["sampling"][0], None,
+                     output, None,
                      sps=sps,
-                     tsample=output["sampling"][1],
+                     tsample=None,
                      toptimize=0.0)

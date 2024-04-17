@@ -1,5 +1,6 @@
 import numpy as np
 import os
+import time
 from pandas import read_csv
 from prospect.models import priors, SedModel
 from prospect.models.sedmodel import PolySedModel
@@ -13,6 +14,19 @@ from prospect.models.sedmodel import PolySpecModel
 from prospect.models.sedmodel import SpecModel
 from astropy.cosmology import WMAP9
 
+from prospect.utils import prospect_args
+from prospect.fitting import fit_model
+from prospect.models import model_setup
+from prospect.likelihood import lnlike_spec, lnlike_phot, write_log
+from dynesty.dynamicsampler import stopping_function, weight_function, _kld_error
+from dynesty.utils import *
+from prospect.io import write_results
+
+import mpi4py
+from schwimmbad import MPIPool
+mpi4py.rc.threads = False
+mpi4py.rc.recv_mprobe = False
+
 
 # --------------
 # RUN_PARAMS
@@ -20,7 +34,7 @@ from astropy.cosmology import WMAP9
 
 run_params = {'verbose':True,
               'debug':False,
-              'outfile':'160411A',
+              # 'outfile':'160411A',
               'output_pickles': False,
               # Optimization parameters
               'do_powell': False,
@@ -57,41 +71,15 @@ def load_obs(spec = False, spec_file = None, maskspec=False,
              phottable=None, luminosity_distance=0, snr=10, **kwargs):
       
     sdss = ['sdss_{}0'.format(b) for b in ['g','r','i','z']]
-    # twomass = ['twomass_J', 'twomass_Ks']
     wise = ['wise_w1', 'wise_w2']
 
     filternames = sdss + wise
     
     # these are apparent magnitudes
-    # M_AB = np.array([25.188, 24.486, 24.149, 24.012, 23.147, 23.186])
-    # M_AB = np.array([20.144327, 18.742605, 18.173893, 17.796282, 17.236155, 17.585125]) # lensed
     M_AB = np.array([19.971344, 19.177868, 18.76374, 18.528467, 18.416647, 18.769682]) # unlensed 0
-    # M_AB = np.array([21.09376, 19.217657, 18.627756, 18.26737, 17.619947, 18.067379]) # unlensed 1
-    # M_AB = np.array([20.236359, 19.436996, 19.097378, 18.961184, 19.060566, 19.395372]) # unlensed 2
-    # M_AB = np.array([20.318012, 19.460712, 19.242052, 18.899273, 18.731413, 18.698557]) # unlensed 3
-    # M_AB = np.array([20.495012, 19.463655, 19.104834, 18.858007, 19.064306, 19.506773]) # unlensed 4
-    # M_AB = np.array([20.144327, 18.742605, 18.173893, 17.796282, 17.236155, 17.585125]) # unlensed 5
-    # M_AB = np.array([20.549543, 19.614843, 19.333286, 19.18617, 19.001318, 19.85126]) # unlensed 6
-    # M_AB = np.array([20.919525, 19.745195, 19.335922, 19.031162, 19.161222, 19.519356]) # unlensed 7
-    # M_AB = np.array([19.572714, 18.49181, 18.074419, 17.809391, 17.733356, 17.90428]) # unlensed 8
-    # M_AB = np.array([21.386827, 20.1471, 19.703701, 19.40113, 19.419971, 20.451546]) # unlensed 9
 
     # uncertainties in apparent magnitudes
-    # M_AB_unc = np.array([0.352, 0.135, 0.115, 0.206, 0.170, 0.236]) 
-    # M_AB_unc = np.array([0.00583267, 0.00240255, 0.00534675, 0.00156686, 0.00728733, # lensed
-    #    0.01758563])
     M_AB_unc = np.array([0.00533879, 0.00345792, 0.01143685, 0.00278628, 0.01649121, 0.04711887]) # unlensed 0
-    # M_AB_unc = np.array([0.01595042, 0.00407315, 0.00991944, 0.0025198,  0.01003872, 0.0288243 ]) # unlensed 1
-    # M_AB_unc = np.array([0.00886786, 0.00620732, 0.02221301, 0.00576023, 0.029454, 0.08759248]) # unlensed 2
-    # M_AB_unc = np.array([0.00623631, 0.00381073, 0.01494266, 0.00341833, 0.0209946, 0.04275754]) # unlensed 3
-    # M_AB_unc = np.array([0.00702443, 0.00414651, 0.01185289, 0.00333568, 0.02748587, 0.08826594]) # unlensed 4
-    # M_AB_unc = np.array([0.00583267, 0.00240255, 0.00534675, 0.00156686, 0.00728733, 0.01758563]) # unlensed 5
-    # M_AB_unc = np.array([0.0293107,  0.01715418, 0.06768112, 0.01753395, 0.07083746, 0.29578818]) # unlensed 6
-    # M_AB_unc = [0.01310019, 0.00610606, 0.02076367, 0.00494169, 0.03313541, 0.09902748] # unlensed 7
-    # M_AB_unc = np.array([0.00545691, 0.00292408, 0.00911807, 0.00218623, 0.01165953, 0.02748346]) # unlensed 8
-    # M_AB_unc = np.array([0.01230493, 0.0053716,  0.01717679, 0.00400329, 0.03564853, 0.19995856]) # unlensed 9
-    
-    
     
     # convert from apparent magnitude to flux in maggies
     mags = 10**(-0.4*M_AB)
@@ -295,7 +283,7 @@ def load_model(add_duste=False, opt_spec=False, smooth_spec = False,
     #fixed values
     model_params["imf_type"]["init"] = 1 # Chabrier
     model_params["dust_type"]["init"] = 2 #1 # Milky Way extinction law
-    model_params["sfh"]["init"] = 4 # delayed-tau 
+    model_params["sfh"]["init"] = 4 # delayed-tau # TODO: investigate this
     model_params["logzsol"]["isfree"] = True
     model_params["tau"]["isfree"] = True
     model_params["dust2"]["isfree"] = True
@@ -413,3 +401,185 @@ def load_model(add_duste=False, opt_spec=False, smooth_spec = False,
         run_params["opt_spec"] = False
         
     return model
+
+###################################################################################################################
+######################################### Run functions ##################################
+###################################################################################################################
+
+def lnprobfn(theta, model=None, obs=None, sps=None, noise=(None,None), verbose=None):
+    """Given a parameter vector and optionally a dictionary of observational
+    ata and a model object, return the ln of the posterior. This requires that
+    an sps object (and if using spectra and gaussian processes, a GP object) be
+    instantiated.
+
+    :param theta:
+        Input parameter vector, ndarray of shape (ndim,)
+
+    :param model:
+        bsfh.sedmodel model object, with attributes including ``params``, a
+        dictionary of model parameters.  It must also have ``prior_product()``,
+        and ``mean_model()`` methods defined.
+
+    :param obs:
+        A dictionary of observational data.  The keys should be
+          *``wavelength``
+          *``spectrum``
+          *``unc``
+          *``maggies``
+          *``maggies_unc``
+          *``filters``
+          * and optional spectroscopic ``mask`` and ``phot_mask``.
+
+    :returns lnp:
+        Ln posterior probability.
+    """
+    # if model is None:
+    #     model = global_model
+    # if obs is None:
+    #     obs = global_obs
+
+    lnp_prior = model.prior_product(theta, nested=True)
+    if np.isfinite(lnp_prior):
+        # Generate mean model
+        try:
+            mu, phot, x = model.mean_model(theta, obs, sps=sps)
+        except(ValueError):
+            return -np.infty
+
+        # Noise modeling
+        spec_noise, phot_noise = noise
+        if spec_noise is not None:
+            spec_noise.update(**model.params)
+        if phot_noise is not None:
+            phot_noise.update(**model.params)
+        vectors = {'spec': mu, 'unc': obs['unc'],
+                   'sed': model._spec, 'cal': model._speccal,
+                   'phot': phot, 'maggies_unc': obs['maggies_unc']}
+
+        # Calculate likelihoods
+        lnp_spec = lnlike_spec(mu, obs=obs, spec_noise=spec_noise, **vectors)
+        lnp_phot = lnlike_phot(phot, obs=obs, phot_noise=phot_noise, **vectors)
+
+        return lnp_phot + lnp_spec + lnp_prior
+    else:
+        return -np.infty
+
+def prior_transform(u, model=None):
+    if model is None:
+        raise ValueError("Model is none!")
+        # model = global_model
+        
+    return model.prior_transform(u)
+
+
+def halt(message):
+    """Exit, closing pool safely.
+    """
+    print(message)
+    try:
+        pool.close()
+    except:
+        pass
+    sys.exit(0)
+
+#### Main function to setup and run prospector
+if __name__ == "__main__":
+
+    # --------------
+    # Setup
+    # --------------
+    # - Parser with default arguments -
+    parser = prospect_args.get_parser()
+    # - Add custom arguments -
+    parser.add_argument('--object_redshift', type=float, default=0.0,
+                        help=("Redshift for the model"))
+    parser.add_argument('--objid', type=int, default=0,
+                        help="zero-index row number in the table to fit.")
+    parser.add_argument('--mag_in')
+    parser.add_argument('--mag_unc_in')
+    # parser.add_argument('--outfile', type=str, default='prospect')
+
+    args = parser.parse_args()
+    rp = vars(args)
+    
+    run_params.update(rp)
+    run_params['param_file'] = __file__
+    
+    # Use the globals
+    model = model_setup.load_model(**run_params)
+    obs = model_setup.load_obs(**run_params)
+    spec_noise, phot_noise = model_setup.load_gp(**run_params)
+    sps = model_setup.load_sps(**run_params)
+    
+    
+    # Try to get sps libraries
+    try:
+        rp['sps_libraries'] = sps.ssp.libraries
+    except(AttributeError):
+        rp['sps_libraries'] = None
+    
+    # Run SPS over sparse grid to get necessary data in cache/memory
+    initial_theta_grid = np.around(np.arange(model.config_dict["logzsol"]['prior'].range[0],
+                                             model.config_dict["logzsol"]['prior'].range[1], 
+                                             step=0.01), decimals=2)
+
+    for theta_init in initial_theta_grid:
+        sps.ssp.params["sfh"] = model.params['sfh'][0]
+        sps.ssp.params["imf_type"] = model.params['imf_type'][0]
+        sps.ssp.params["logzsol"] = theta_init
+        sps.ssp._compute_csp()
+    
+    if rp.get('debug', False):
+        halt('stopping for debug')
+
+    # Try to set up an HDF5 file and write basic info to it
+    outroot = "{0}_{1}".format(rp['outfile'], int(time.time()))
+    odir = os.path.dirname(os.path.abspath(outroot))
+    if (not os.path.exists(odir)):
+        badout = 'Target output directory {} does not exist, please make it.'.format(odir)
+        halt(badout)
+
+    # -------
+    # Sample
+    # -------
+    if rp['verbose']:
+        print('dynesty sampling...')
+    tstart = time.time()  # time it
+    with MPIPool() as pool:
+        if not pool.is_master():
+            pool.wait()
+            sys.exit(0)
+        nprocs = pool.size
+        
+        
+        dynestyout = fit_model(obs, model, sps, noise=(spec_noise, phot_noise), 
+                                       lnprobfn=lnprobfn,
+                                       queue_size=nprocs, stop_function=stopping_function, 
+                                       wt_function=weight_function, **rp)
+        # dynestyout = fitting.run_dynesty_sampler(lnprobfn, prior_transform, model.ndim,
+        #                                          pool=pool, queue_size=nprocs, 
+        #                                          stop_function=stopping_function,
+        #                                          wt_function=weight_function,
+        #                                          **rp)
+    ndur = time.time() - tstart
+    print('done dynesty in {0}s'.format(ndur))
+    import pdb; pdb.set_trace()
+
+    # -------------------------
+    # Output HDF5 (and pickles if asked for)
+    # -------------------------
+    if rp.get("output_pickles", False):
+        # Write the dynesty result object as a pickle
+        import pickle
+        with open(outroot + '_dns.pkl', 'w') as f:
+            pickle.dump(dynestyout, f)
+    
+        # Write the model as a pickle
+        partext = write_results.paramfile_string(**rp)
+        write_results.write_model_pickle(outroot + '_model', model, powell=None,
+                                         paramfile_text=partext)
+    
+    # Write HDF5
+    hfile = outroot + '_mcmc.h5'
+    write_results.write_hdf5(hfile, rp, model, obs, dynestyout,
+                             None, tsample=ndur)

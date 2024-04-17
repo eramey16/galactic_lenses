@@ -34,11 +34,11 @@ import prospect.io.read_results as reader
 # register_adapter(np.int64, AsIs)
 
 bands = ['g', 'r', 'i', 'z', 'w1', 'w2']
+colors = ['g_r', 'i_z', 'r_i', 'r_z', 'w1_w2', 'z_w1']
 trac_cols = ['ls_id', 'ra', 'dec', 'type'] \
-            + ['mag_'+b for b in bands] \
-            + ['flux_'+b for b in bands] \
             + ['dered_mag_'+b for b in bands] \
             + ['dered_flux_'+b for b in bands] \
+            + colors \
             + ['snr_'+b for b in bands] \
             + ['flux_ivar_'+b for b in bands] \
             + ['dchisq_'+str(i) for i in range(1,6)] \
@@ -56,7 +56,7 @@ output_dir = '/gradient_boosted/exports/' # Uncomment these two lines before pus
 input_dir = '/gradient_boosted/'
 # output_dir = '/global/cscratch1/sd/eramey16/gradient/' # Comment these two lines before pushing to docker
 # input_dir='/global/cscratch1/sd/eramey16/gradient/'
-prosp_file = 'photoz_hm_params_short_dpon_on.py'
+prosp_file = 'param_monocle.py'
 one_as = 0.0002777777778 # degrees per arcsecond
 
 #given an RA and DEC, pull magnitudes, magnitude uncertainties, redshifts from NOAO
@@ -76,7 +76,7 @@ def _sub_query(query):
         result = qc.query(sql=query) # result as string
         data = convert(result, "pandas") # result as dataframe
         return data
-    # Connection error(s) # Still going to fail when it's called and doesn't return data? TODO
+    # Connection error(s)
     except requests.exceptions.ConnectionError as e:
         raise Exception(f"ConnectionError: {e}")
     except qc.queryClientError as e:
@@ -87,8 +87,9 @@ def send_query(where, cols=trac_cols, tbl='ls_dr10.tractor AS trac', extras=''):
     data = _sub_query(query)
     return data
 
-def query_galaxy(ra,dec,radius=one_as,cols=all_cols,trac_table="ls_dr10.tractor",phot_table="ls_dr10.photo_z_10p1",
-                 data_type=None,limit=1,save=None):
+def query_galaxy(ra,dec,radius=one_as,cols=all_cols,trac_table="ls_dr10.tractor",
+                 phot_table="ls_dr10.photo_z", data_type=None,limit=1,
+                 engine=None, save=None):
     """Queries the NOAO Legacy Survey Data Release 10 Tractor and Photo-Z tables
 
     Parameters:
@@ -109,7 +110,7 @@ def query_galaxy(ra,dec,radius=one_as,cols=all_cols,trac_table="ls_dr10.tractor"
             it'll work.
     """
     # Set up basic query
-    query =[f"""SELECT {'trac.brickid,trac.brickname,trac.objid,'+','.join(cols)} FROM {trac_table} AS trac """
+    query =[f"""SELECT {','.join(cols)} FROM {trac_table} AS trac """
     f"""INNER JOIN {phot_table} as phot_z ON trac.ls_id=phot_z.ls_id """,
     f"""WHERE (q3c_radial_query(ra,dec,{ra},{dec},{radius})) """,
     f"""ORDER BY q3c_dist({ra}, {dec}, trac.ra, trac.dec) ASC """,
@@ -120,31 +121,15 @@ def query_galaxy(ra,dec,radius=one_as,cols=all_cols,trac_table="ls_dr10.tractor"
     # Join full query
     query = ''.join(query)
     
-    # query =[f"""SELECT {'brickid,brickname,objid,'+','.join(cols)} FROM {trac_table} AS trac
-    # WHERE (q3c_radial_query(ra,dec,{ra},{dec},{radius})) """,
-    # f""" INNER JOIN {phot_table} as phot ON trac.ls_id==phot.ls_id """
-    # f""" ORDER BY q3c_dist({ra}, {dec}, trac.ra, trac.dec) """,
-    # f""" LIMIT {limit}"""]
-    
     trac_data = _sub_query(query)
     if trac_data.empty:
         raise ValueError(f"No objects within {radius/one_as:.2f} arcsec of {ra},{dec}")
     
-#     for i,row in trac_data.iterrows():
-#         ### Now pull the redshift data
-#         query = [f"""SELECT {','.join(phot_z_cols)} 
-#         FROM ls_dr9.photo_z AS phot_z 
-#         INNER JOIN ls_dr9.tractor as trac on trac.ls_id = phot_z.ls_id
-#         WHERE (q3c_radial_query(ra,dec,{row.ra},{row.dec},{radius})) """,
-#         f""" ORDER BY q3c_dist({row.ra}, {row.dec}, trac.ra, trac.dec) ASC""",
-#         f""" LIMIT 1"""]
-#         query = ''.join(query)
-
-#         z_data = _sub_query(query)
-#         if z_data.empty:
-#             raise ValueError(f"No redshift found for galaxy {z_data.ls_id}")
+    # Save to DB
+    if save is not None:
+        if engine is None:
+            engine = sqlalchemy.create_engine(util.conn_string, poolclass=NullPool)
         
-#         trac_data.loc[i, phot_z_cols] = list(z_data[phot_z_cols].iloc[0])
     
     return trac_data
     
@@ -275,31 +260,21 @@ def update_db(bkdata, gal_data, engine=None):
             print(f"Received Error {e}, sleeping {sleeptime} seconds and trying again.")
             time.sleep(sleeptime)
     raise ValueError("Could not connect to the database")
-
-def _fix_db(ls_id, data_dir='./', model_file='rf.model', engine=None):
-    """ One-time function to fix the database after not uploading results """
-    data_dir = os.path.expandvars(data_dir)
-    if engine==None:
-        engine = sqlalchemy.create_engine(util.conn_string, poolclass=NullPool)
-    
-    bkdata, dr9_data = get_galaxy(ls_id, engine=engine)
-    
-    gal_data = merge_prospector(dr9_data, h5_file=os.path.join(data_dir, str(ls_id)+'.h5'))
-    pred = predict(gal_data, model_file=model_file)
-    gal_data['lensed'] = pred
-    
-    update_db(bkdata, gal_data, engine=engine)
     
 
-def run_prospector(ls_id, redshift, mags, mag_uncs, prosp_file=prosp_file):
+def run_prospector(ls_id, mags, mag_uncs, prosp_file=prosp_file, redshift=None):
     """ Runs prospector with provided parameters """
     # Input and output filenames
     pfile = os.path.join(input_dir, prosp_file)
     outfile = os.path.join(output_dir, str(ls_id))
     
     # Run prospector with parameters
-    os.system(f'python {pfile} --objid={ls_id} --dynesty --object_redshift={redshift} ' \
-              + f'--outfile={outfile} --mag_in="{mags}" --mag_unc_in="{mag_uncs}"')
+    if redshift is not None:
+        os.system(f'python {pfile} --object_redshift={redshift} --mag_in="{mags}"' \
+                  + f' --mag_unc_in="{mag_uncs}" --outfile={outfile}')
+    else:
+        os.system(f'python {pfile} --mag_in="{mags}" ' \
+                  + f'--mag_unc_in="{mag_uncs}" --outfile={outfile}')
     
     return outfile +'.h5'
 
@@ -325,6 +300,7 @@ if __name__ == "__main__":
     parser.add_argument("-r","--ra",type=float, help = "RA selection")
     parser.add_argument("-d","--dec",type=float, help="DEC selection")
     parser.add_argument("-rd", "--radius",type=float, default=0.0002777777778, help = "Radius for q3c radial query")
+    parser.add_argument('-p', '--predict', action='store_true')
     parser.add_argument("-s","--save",type=str,default=None, help="Database table to save result")
     
     # Start sqlalchemy engine
@@ -348,8 +324,9 @@ if __name__ == "__main__":
     gal_data = merge_prospector(tbldata)
     
     # Test on RF model
-    pred = predict(gal_data)
-    gal_data['lensed'] = pred
+    if args.predict:
+        pred = predict(gal_data)
+        gal_data['lensed'] = pred
     
     # Write output to database
     if save:

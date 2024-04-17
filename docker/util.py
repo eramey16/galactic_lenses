@@ -20,34 +20,12 @@ import prospect.io.read_results as reader
 
 Base = declarative_base()
 
-# Old columns
-# cols_old = ["ls_id", "ra", "dec","type",
-#         "dered_mag_g","dered_mag_r","dered_mag_z",
-#         "dered_mag_w1", "dered_mag_w2",'unc_g','unc_r',
-#         'unc_z','unc_w1','unc_w2', "z_phot_median",
-#         "z_phot_std",'z_spec','dered_flux_g','dered_flux_r',
-#         'dered_flux_z','dered_flux_w1','dered_flux_w2'
-#        ]
-
-# Previous updated columns
-# cols_middle = ["ls_id", "ra", "dec","type",
-#         "dered_mag_g","dered_mag_r","dered_mag_z",
-#         "dered_mag_w1", "dered_mag_w2",'snr_g','snr_r',
-#         'snr_z','snr_w1','snr_w2', "z_phot_median",
-#         "z_phot_std",'z_spec','dered_flux_g','dered_flux_r',
-#         'dered_flux_z','dered_flux_w1','dered_flux_w2', 
-#         'dchisq_1', 'dchisq_2', 'dchisq_3', 'dchisq_4', 'dchisq_5',
-#         'rchisq_g', 'rchisq_r', 'rchisq_z', 'rchisq_w1', 'rchisq_w2',
-#         'psfsize_g', 'psfsize_r', 'psfsize_z', 'sersic', 'sersic_ivar',
-#         'shape_e1', 'shape_e1_ivar', 'shape_e2', 'shape_e2_ivar', 
-#         'shape_r', 'shape_r_ivar',
-#        ]
-
 # New updated columns
 bands = ['g', 'r', 'i', 'z', 'w1', 'w2']
+colors = ['g_r', 'i_z', 'r_i', 'r_z', 'w1_w2', 'z_w1']
+# bands = ['g', 'r', 'z', 'w1', 'w2']
 trac_cols = ['ls_id', 'ra', 'dec', 'type'] \
-            + ['mag_'+b for b in bands] \
-            + ['flux_'+b for b in bands] \
+            + colors \
             + ['mag_'+b for b in bands] \
             + ['flux_'+b for b in bands] \
             + ['dered_mag_'+b for b in bands] \
@@ -64,7 +42,7 @@ phot_z_cols = ['z_phot_median', 'z_phot_std', 'z_spec']
 
 query_cols = trac_cols+phot_z_cols
 
-theta_labels = ['dust2', 'tau', 'massmet_1', 'massmet_2', 'logtmax']
+theta_labels = ['dust2', 'tage', 'tau', 'massmet_1', 'massmet_2']
 
 # Column labels for h5 files
 h5_cols = ['ls_id'] + \
@@ -77,7 +55,8 @@ h5_cols = ['ls_id'] + \
         ['chisq_maggies']
 
 # Columns to use for ML ### TODO: fix these
-use_cols = ['g/r', 'i/z' 'r/i', 'r/z', 'w1/w2' 'z/w1', 'z_phot_median', 'chisq_maggies'] + \
+use_cols = ['z_phot_median', 'chisq_maggies'] + \
+            colors + \
             [f"rchisq_{band}" for band in bands] + \
             [theta+"_med" for theta in theta_labels] + \
             [theta+"_sig_diff" for theta in theta_labels]
@@ -88,8 +67,6 @@ filter_cols = use_cols+['dered_mag_'+b for b in bands]+['ls_id', 'ra', 'dec', 't
 dchisq_labels = [f'dchisq_{i}' for i in range(1,6)]
 rchisq_labels = ['rchisq_g', 'rchisq_r', 'rchisq_z', 'rchisq_w1', 'rchisq_w2']
 
-res_cols = []
-obs_cols = []
 model_cols = [
     'zred',
     'mass',
@@ -117,7 +94,8 @@ db_cols = [
     Column('type', VARCHAR(4)),
     *[Column(col, FLOAT) for col in query_cols[4:]+h5_cols[1:]], # All other cols
     Column('lensed', BOOLEAN),
-    Column('id', BIGINT, primary_key=True, autoincrement=True)
+    Column('id', BIGINT, primary_key=True, autoincrement=True),
+    Column('lens_grade', VARCHAR(1)),
 ]
 
 # Connection to database
@@ -254,29 +232,24 @@ def load_data(gal_results):
     return row
 
 def clean_and_calc(data, duplicates=False, filter_cols=filter_cols, 
-                   mode='all', cut_mag=False, i_band=True):
+                   mode='all', cut_mag=False, dropna=False):
     
     data = data.copy()
     filter_cols = [col for col in filter_cols if col in data.columns]
     
     ### Filtering for DS9 data
-    if mode in ['all', 'dr9']:
+    if mode in ['all', 'dr10']:
         # Calculate colors
-        data['g/r'] = -2.5*np.log10(data['dered_flux_g']/data['dered_flux_r'])
-        data['r/z'] = -2.5*np.log10(data['dered_flux_r']/data['dered_flux_z'])
-        data['w1/w2'] = -2.5*np.log10(data['dered_flux_w1']/data['dered_flux_w2'])
-        data['z/w1'] = -2.5*np.log10(data['dered_flux_z']/data['dered_flux_w2'])
+        for c in colors:
+            c_ = c.split('_')
+            data[c] = data['dered_mag_'+c_[0]]-data['dered_mag_'+c_[-1]]
         
-        if i_band:
-            data['i/z'] = -2.5*np.log10(data['dered_flux_i']/data['dered_flux_z'])
-            data['r/i'] = -2.5*np.log10(data['dered_flux_r']/data['dered_flux_i'])
-            all_bands = bands
-        else:
-            all_bands = [b for b in bands if b!='i']
+        data.loc[data.z_phot_median<0, 'z_phot_median'] = np.nan
+        data.loc[data.z_phot_std<0, 'z_phot_std'] = np.nan
+        data.loc[data.z_spec<0, 'z_spec'] = np.nan
         
         # Uncertainties
-        for b in all_bands:
-            # data['unc_'+b] = 1 / data['snr_'+b]
+        for b in bands:
             data['flux_sigma_'+b] = 1 / np.sqrt(data['flux_ivar_'+b])
         
         # Calculate minimum dchisq
@@ -286,6 +259,7 @@ def clean_and_calc(data, duplicates=False, filter_cols=filter_cols,
         # Calculate sum rchisq
         rchisq = np.array(data[rchisq_labels])
         data['sum_rchisq'] = np.sum(rchisq, axis=1)
+        data.loc[data.sum_rchisq>100, 'sum_rchisq'] = np.nan
         
         # Calculate abs mag in r band
         dm = 5*np.log10(300000*data.z_phot_median/70)+25
@@ -305,7 +279,8 @@ def clean_and_calc(data, duplicates=False, filter_cols=filter_cols,
     
     # Remove bad / duplicate entries
     data.replace([np.inf, -np.inf], np.nan, inplace=True)
-    data = data.dropna(subset=filter_cols)
+    if dropna:
+        data.dropna(subset=filter_cols, inplace=True)
     if not duplicates:
         data.drop_duplicates(subset=['ls_id'], inplace=True)
     
@@ -360,9 +335,12 @@ def setup_table(conn, table_name):
     
     return tbl
 
-def bookkeeping_setup(conn, table_name, data, tag=None):
+def bookkeeping_setup(table_name, engine=None, train=False, data=None, tag=None):
     """ Start bookkeeping for a series of galaxies and a given pandas table """
     # Metadata object
+    if engine is None:
+        engine = create_engine(conn_string, poolclass=NullPool)
+    conn = engine.connect()
     meta = MetaData(conn)
     
     # Bookkeeping table columns
@@ -374,25 +352,38 @@ def bookkeeping_setup(conn, table_name, data, tag=None):
         Column('created', DateTime, default=func.now()),
         Column('stage', INT, default=0),
         Column('tag', String, default='untagged'),
+        Column('train', BOOLEAN),
     )
     
     # Create table if needed
     meta.create_all(conn, checkfirst=True)
     data_tbl = setup_table(conn, table_name)
     
-    for i,row in data.iterrows():
-        stmt = data_tbl.insert().values(**row)
-        result = conn.execute(stmt)
-        pkey = result.inserted_primary_key[0]
-        
-        # For now just assume we have dr9 data
-        stmt = bktbl.insert().values(tbl_id=pkey, 
-                              tbl_name=table_name,
-                              ls_id=row.ls_id,
-                              stage=1, 
-                              tag=tag
-                            )
-        conn.execute(stmt)
+    if data is None:
+        pass
+    else:
+        for i,row in data.iterrows():
+            stmt = data_tbl.insert().values(**row)
+            result = conn.execute(stmt)
+            pkey = result.inserted_primary_key[0]
+
+            # For now just assume we have dr9 data
+            stmt = bktbl.insert().values(tbl_id=pkey, 
+                                  tbl_name=table_name,
+                                  ls_id=row.ls_id,
+                                  stage=1,
+                                  train=train,
+                                  tag=tag
+                                )
+            conn.execute(stmt)
+
+def add_to_table(table_name, data, engine=None, train=False, tag=None):
+    if engine is None:
+        engine = create_engine(conn_string, poolclass=NullPool)
+    
+    bktbl = sa.Table('bookkeeping', sa.MetaData(), autoload_with=engine)
+    tbl = sa.Table(table_name, sa.MetaData(), autoload_with=engine)
+    pass
 
 def save_to_db(path, db_name, lim=None, delete=False):
     """ Saves a prospector folder's contents to a database """
@@ -448,18 +439,20 @@ def save_to_db(path, db_name, lim=None, delete=False):
     
     conn.close()
 
-def read_table(db_name):
+def read_table(db_name, engine=None):
     """ Reads a pandas table in from a database """
     
-    engine = create_engine(conn_string, poolclass=NullPool)
+    if engine is None:
+        engine = create_engine(conn_string, poolclass=NullPool)
     
     data = pd.read_sql(f"SELECT * from {db_name}", engine)
     
     return data
 
-def write_table(data, db_name, if_exists='append'):
+def write_table(data, db_name, if_exists='append', engine=None):
     
-    engine = create_engine(conn_string, poolclass=NullPool)
+    if engine is None:
+        engine = create_engine(conn_string, poolclass=NullPool)
     
     data.to_sql(db_name, engine, if_exists=if_exists, index=False)
     
