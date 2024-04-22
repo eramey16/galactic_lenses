@@ -28,6 +28,7 @@ RUN conda install -c astropy astroquery corner
 RUN conda install sqlalchemy psycopg2 requests scikit-learn
 
 ADD classify.py /monocle/classify.py
+ADD gallazzi_05_massmet.txt /monocle/gallazzi_05_massmet.txt
 ADD rf.model /monocle/rf.model
 ADD param_monocle.py /monocle/param_monocle.py
 ADD util.py /monocle/util.py
