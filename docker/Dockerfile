@@ -29,7 +29,7 @@ RUN conda install sqlalchemy psycopg2 requests scikit-learn
 
 ADD classify.py /monocle/classify.py
 ADD rf.model /monocle/rf.model
-ADD photoz_hm_params_short_dpon_on.py /monocle/photoz_hm_params_short_dpon_on.py
+ADD param_monocle.py /monocle/param_monocle.py
 ADD util.py /monocle/util.py
 # ADD __init__.py /monocle/__init__.py
 

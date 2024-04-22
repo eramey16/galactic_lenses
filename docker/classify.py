@@ -82,7 +82,7 @@ def _sub_query(query):
     except qc.queryClientError as e:
         raise Exception(f"Query Client Error: {e}")
 
-def send_query(where, cols=trac_cols, tbl='ls_dr10.tractor AS trac', extras=''):
+def send_query(where, cols=util.trac_cols, tbl='ls_dr10.tractor AS trac', extras=''):
     query = f"SELECT {','.join(cols)} FROM {tbl} WHERE {where} {extras}"
     data = _sub_query(query)
     return data
@@ -188,19 +188,18 @@ def merge_prospector(dr9_data, h5_file=None):
     
     # magnitudes, uncertainties, and fluxes
     mags = [basic_data['dered_mag_'+b] for b in bands]
-    mag_uncs = [ 2.5 / (np.log(10) * basic_data['dered_flux_'+b] * 
-                        np.sqrt(basic_data['flux_ivar_'+b])) for b in bands]
-    fluxes = [basic_data['dered_flux_'+b] for b in bands]
+    mag_uncs = list(2.5 / np.log(10) / np.array([gal['snr_'+b] for b in bands]))
+    # fluxes = [basic_data['dered_flux_'+b] for b in bands]
     
     # Print
     print(f'Redshift: {basic_data.z_phot_median}')
     
     # Data shortcuts
-    red_value = basic_data.z_phot_median
+    # red_value = basic_data.z_phot_median
     
     # Run Prospector
     if h5_file is None:
-        h5_file = run_prospector(basic_data.ls_id, red_value, mags, mag_uncs)
+        h5_file = run_prospector(basic_data.ls_id, mags, mag_uncs)
     
     # Read prospector file
     h5_data = reader.results_from(h5_file)

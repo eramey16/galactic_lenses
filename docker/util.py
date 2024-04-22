@@ -25,11 +25,9 @@ bands = ['g', 'r', 'i', 'z', 'w1', 'w2']
 colors = ['g_r', 'i_z', 'r_i', 'r_z', 'w1_w2', 'z_w1']
 # bands = ['g', 'r', 'z', 'w1', 'w2']
 trac_cols = ['ls_id', 'ra', 'dec', 'type'] \
-            + colors \
-            + ['mag_'+b for b in bands] \
-            + ['flux_'+b for b in bands] \
             + ['dered_mag_'+b for b in bands] \
             + ['dered_flux_'+b for b in bands] \
+            + colors \
             + ['snr_'+b for b in bands] \
             + ['flux_ivar_'+b for b in bands] \
             + ['dchisq_'+str(i) for i in range(1,6)] \
