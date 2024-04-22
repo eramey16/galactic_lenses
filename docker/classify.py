@@ -52,8 +52,8 @@ all_cols = ['trac.'+col for col in trac_cols] + ['phot_z.'+col for col in phot_z
 
 query_cols = ', '.join(all_cols)
 
-output_dir = '/gradient_boosted/exports/' # Uncomment these two lines before pushing to docker
-input_dir = '/gradient_boosted/'
+output_dir = '/monocle/exports/' # Uncomment these two lines before pushing to docker
+input_dir = '/monocle/'
 # output_dir = '/global/cscratch1/sd/eramey16/gradient/' # Comment these two lines before pushing to docker
 # input_dir='/global/cscratch1/sd/eramey16/gradient/'
 prosp_file = 'param_monocle.py'
@@ -189,7 +189,7 @@ def merge_prospector(dr10_data, h5_file=None):
     
     # magnitudes, uncertainties, and fluxes
     mags = [basic_data['dered_mag_'+b] for b in bands]
-    mag_uncs = list(2.5 / np.log(10) / np.array([gal['snr_'+b] for b in bands]))
+    mag_uncs = list(2.5 / np.log(10) / np.array([basic_data['snr_'+b] for b in bands]))
     # fluxes = [basic_data['dered_flux_'+b] for b in bands]
     
     # Print
@@ -199,7 +199,7 @@ def merge_prospector(dr10_data, h5_file=None):
     # red_value = basic_data.z_phot_median
     
     # Run Prospector
-    if h5_file is None:
+    if h5_file is None or not os.path.exists(h5_file):
         h5_file = run_prospector(basic_data.ls_id, mags, mag_uncs)
     
     # Read prospector file
