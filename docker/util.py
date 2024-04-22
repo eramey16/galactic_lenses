@@ -10,7 +10,7 @@ import sys
 import h5py
 import psycopg2
 import corner
-from sqlalchemy import create_engine, Column, Table, MetaData
+from sqlalchemy import create_engine, Column, Table, MetaData, text
 from sqlalchemy import String, DateTime
 from sqlalchemy.types import BIGINT, FLOAT, REAL, VARCHAR, BOOLEAN, INT
 from sqlalchemy.sql import func
@@ -362,7 +362,7 @@ def bookkeeping_setup(table_name, engine=None, train=False, data=None, tag=None)
     else:
         for i,row in data.iterrows():
             stmt = data_tbl.insert().values(**row)
-            result = conn.execute(stmt)
+            result = conn.execute(text(stmt))
             pkey = result.inserted_primary_key[0]
 
             # For now just assume we have dr9 data
@@ -373,7 +373,7 @@ def bookkeeping_setup(table_name, engine=None, train=False, data=None, tag=None)
                                   train=train,
                                   tag=tag
                                 )
-            conn.execute(stmt)
+            conn.execute(text(stmt))
 
 def add_to_table(table_name, data, engine=None, train=False, tag=None):
     if engine is None:

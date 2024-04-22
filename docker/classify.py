@@ -172,7 +172,7 @@ def get_galaxy(ls_id, tag=None, engine=None):
 
             conn.close()
 
-            return bkdata, tbldata[util.dr9_cols]
+            return bkdata, tbldata[util.query_cols]
             
         except OperationalError as e: # If too many connections, sleep and try again
             sleeptime = 5 + 5*np.random.rand() # Sleep 5-10 seconds
@@ -180,9 +180,9 @@ def get_galaxy(ls_id, tag=None, engine=None):
             time.sleep(sleeptime)
     raise ValueError("Could not connect to the database")
 
-def merge_prospector(dr9_data, h5_file=None):
-    """ Collects prospector data on a galaxy and merges it with dr9 data """
-    basic_data = dr9_data.iloc[0] # Series of values
+def merge_prospector(dr10_data, h5_file=None):
+    """ Collects prospector data on a galaxy and merges it with dr10 data """
+    basic_data = dr10_data.iloc[0] # Series of values
     
     # Find 
     print(f'Object found: {basic_data.ls_id}')
@@ -206,9 +206,9 @@ def merge_prospector(dr9_data, h5_file=None):
     h5_data = reader.results_from(h5_file)
     prosp_data = util.load_data(h5_data)
     
-    dr9_data.loc[0, util.h5_cols[1:]] = prosp_data
+    dr10_data.loc[0, util.h5_cols[1:]] = prosp_data
     
-    return dr9_data
+    return dr10_data
 
 def update_db(bkdata, gal_data, engine=None):
     """ Updates the database using the bookkeeping and galaxy data provided """
