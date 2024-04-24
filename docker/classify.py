@@ -10,6 +10,7 @@ from sklearn.metrics import classification_report, confusion_matrix, roc_curve
 from sklearn.ensemble import GradientBoostingClassifier
 import h5py
 import requests
+import subprocess
 import random
 import datetime
 import argparse
@@ -58,6 +59,8 @@ input_dir = '/monocle/'
 # input_dir='/global/cscratch1/sd/eramey16/gradient/'
 prosp_file = 'param_monocle.py'
 one_as = 0.0002777777778 # degrees per arcsecond
+
+##################################################
 
 #given an RA and DEC, pull magnitudes, magnitude uncertainties, redshifts from NOAO
 
@@ -269,12 +272,19 @@ def run_prospector(ls_id, mags, mag_uncs, prosp_file=prosp_file, redshift=None):
     outfile = os.path.join(output_dir, str(ls_id))
     
     # Run prospector with parameters
+    # mags = ', '.join([str(x) for x in mags])
+    # mag_uncs = ', '.join([str(x) for x in mag_uncs])
+    import pdb; pdb.set_trace()
     if redshift is not None:
-        os.system(f'python {pfile} --object_redshift={redshift} --mag_in="{mags}"' \
-                  + f' --mag_unc_in="{mag_uncs}" --outfile={outfile}')
+        cmd =  ['python', pfile, f'--object_redshift={redshift}', f'--mag_in={mags}', 
+                f' --mag_unc_in={mag_uncs}', f'--outfile={outfile}']
+        print("Running: ", cmd)
+        subprocess.run(cmd, shell=False, check=True)
     else:
-        os.system(f'python {pfile} --mag_in="{mags}" ' \
-                  + f'--mag_unc_in="{mag_uncs}" --outfile={outfile}')
+        cmd = ['python', pfile, f'--mag_in={mags}',
+                f'--mag_unc_in={mag_uncs}', f'--outfile={outfile}']
+        print("Running: ", cmd) 
+        subprocess.run(cmd, shell=False, check=True) 
     
     return outfile +'.h5'
 

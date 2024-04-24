@@ -29,6 +29,7 @@ from prospect.fitting import fit_model
 from prospect import fitting
 from scipy.stats import truncnorm
 
+from astropy.cosmology import WMAP9
 from dynesty.dynamicsampler import stopping_function, weight_function, _kld_error
 
 # Get galaxy data
@@ -53,6 +54,12 @@ unlensed = {
     'ra': 316.085565,
     'dec': -6.352871
 }
+
+
+output_dir = '/monocle/exports/' # Uncomment these two lines before pushing to docker
+input_dir = '/monocle/'
+# output_dir = './'
+# input_dir = './'
 
 gal = iptf16
 
@@ -89,7 +96,7 @@ class MassMet(priors.Prior):
 
     prior_params = ['mass_mini', 'mass_maxi', 'z_mini', 'z_maxi']
     distribution = truncnorm
-    massmet = np.loadtxt('gallazzi_05_massmet.txt')
+    massmet = np.loadtxt(input_dir+'gallazzi_05_massmet.txt')
     def __len__(self):
         
         """ Hack to work with Prospector 0.3
@@ -201,16 +208,25 @@ def load_model(add_duste=False, opt_spec=False, smooth_spec = False,
     model_params["mass"]["isfree"]= True
     
     # Don't fit redshift (see original to change)
-    model_params["zred"]['isfree'] = False
-    model_params["zred"]['init'] = obs['redshift']
-
-    # Find max age of the universe at this redshift
-    tage_max = tage_from_tuniv(zred=obs['redshift'], tage_tuniv=1.0)
-
-    # Set tage range
-    model_params["tage"]["prior"] = priors.TopHat(mini=0.0, maxi=tage_max)
-    # gives you tage parameter (lookback time)
-    # Can get post-processing stuff to convert to the age of the galaxy (mass-weighted age)
+    # Setting redshift
+    if obs['redshift'] is not None:
+        model_params["zred"]['isfree'] = False
+        model_params["zred"]['init'] = obs['redshift']
+        
+        # Find max age of the universe at this redshift
+        tage_max = tage_from_tuniv(zred=obs['redshift'], tage_tuniv=1.0)
+        
+        # Set tage range
+        model_params["tage"]["prior"] = priors.TopHat(mini=0.0, maxi=tage_max)
+    
+    elif obs['redshift'] is None:
+        model_params["zred"]['isfree'] = True
+        model_params["zred"]["prior"] = priors.TopHat(mini=0.1, maxi=2.0)
+        model_params['tmax'] = {'N': 1,'isfree': True,'init': 0.5,
+                                   'prior': priors.TopHat(mini=0, maxi=1.0)}
+        
+        model_params['tage']['isfree'] = False
+        model_params['tage']['depends_on'] = tmax_to_tage
     
     # adjust priors
     model_params["tau"]["prior"] = priors.LogUniform(mini=0.1, maxi=10.0)
