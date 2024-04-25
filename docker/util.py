@@ -362,7 +362,7 @@ def bookkeeping_setup(table_name, engine=None, train=False, data=None, tag=None)
     else:
         for i,row in data.iterrows():
             stmt = data_tbl.insert().values(**row)
-            result = conn.execute(text(stmt))
+            result = conn.execute(stmt)
             pkey = result.inserted_primary_key[0]
 
             # For now just assume we have dr9 data
@@ -373,7 +373,7 @@ def bookkeeping_setup(table_name, engine=None, train=False, data=None, tag=None)
                                   train=train,
                                   tag=tag
                                 )
-            conn.execute(text(stmt))
+            conn.execute(stmt)
 
 def add_to_table(table_name, data, engine=None, train=False, tag=None):
     if engine is None:
