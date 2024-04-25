@@ -40,7 +40,7 @@ phot_z_cols = ['z_phot_median', 'z_phot_std', 'z_spec']
 
 query_cols = trac_cols+phot_z_cols
 
-theta_labels = ['dust2', 'tage', 'tau', 'massmet_1', 'massmet_2']
+theta_labels = ['zred', 'dust2', 'tau', 'tmax', 'massmet_1', 'massmet_2']
 
 # Column labels for h5 files
 h5_cols = ['ls_id'] + \
