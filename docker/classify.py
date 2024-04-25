@@ -232,7 +232,7 @@ def update_db(bkdata, gal_data, engine=None):
             gal_data = gal_data.iloc[0]
 
             # Update galaxy table
-            db_cols = [col.name for col in util.db_cols][1:-1] # get usable columns of db
+            db_cols = [col.name for col in util.db_cols if col.name in list(gal_data.index)] # get usable columns of db
             update_data = gal_data[db_cols].copy()
             
             # Assemble psql statement
