@@ -44,9 +44,9 @@ theta_labels = ['zred', 'dust2', 'tau', 'tmax', 'massmet_1', 'massmet_2']
 
 # Column labels for h5 files
 h5_cols = ['ls_id'] + \
-        [f'maggies_{i}' for i in range(5)] + \
-        [f'maggies_unc_{i}' for i in range(5)] + \
-        [f'maggies_fit_{i}' for i in range(5)] + \
+        [f'maggies_{i}' for i in range(len(bands))] + \
+        [f'maggies_unc_{i}' for i in range(len(bands))] + \
+        [f'maggies_fit_{i}' for i in range(len(bands))] + \
         [f'{theta}_med' for theta in theta_labels] + \
         [f'{theta}_sig_minus' for theta in theta_labels] + \
         [f'{theta}_sig_plus' for theta in theta_labels] + \
@@ -204,7 +204,7 @@ def load_data(gal_results):
     
     # Calculate secondary results
     # Get reduced chi^2 between maggies and fit
-    red_chisq = np.sum((bf['photometry'] - obs['maggies'])**2 / obs['maggies_unc']**2) / (len(bf['photometry'])-1)
+    rchisq = np.sum((bf['photometry'] - obs['maggies'])**2 / obs['maggies_unc']**2) / (len(bf['photometry'])-1)
     
     # Define function for quantiles (0.16, 0.5, 0.84)
     def calc_quantiles(x):
@@ -224,7 +224,7 @@ def load_data(gal_results):
         list(mid) + \
         list(sig_minus) + \
         list(sig_plus) + \
-        [red_chisq]
+        [rchisq]
     
     # Load into dataframe
     return row

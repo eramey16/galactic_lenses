@@ -313,6 +313,7 @@ if __name__ == "__main__":
     parser.add_argument("-d","--dec",type=float, help="DEC selection")
     parser.add_argument("-rd", "--radius",type=float, default=0.0002777777778, help = "Radius for q3c radial query")
     parser.add_argument('-p', '--predict', action='store_true')
+    parser.add_argument('-n', '--nodb', action='store_true')
     parser.add_argument("-s","--save",type=str,default=None, help="Database table to save result")
     
     # Start sqlalchemy engine
@@ -330,7 +331,7 @@ if __name__ == "__main__":
     
     # Output file names
     h5_file = os.path.join(output_dir, f'{args.ls_id}.h5')
-    basic_file = os.path.join(output_dir, f'{args.ls_id}.csv')
+    # basic_file = os.path.join(output_dir, f'{args.ls_id}.csv')
     
     # Run/read prospector file and get full dataframe
     gal_data = merge_prospector(tbldata)
@@ -341,7 +342,7 @@ if __name__ == "__main__":
         gal_data['lensed'] = pred
     
     # Write output to database
-    if save:
+    if not args.nodb:
         update_db(bkdata, gal_data, engine=engine)
     
     engine.dispose()
