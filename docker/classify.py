@@ -52,15 +52,13 @@ phot_z_cols = ['z_phot_median_i AS z_phot_median', 'z_phot_std_i AS z_phot_std',
 all_cols = ['trac.'+col for col in trac_cols] + ['phot_z.'+col for col in phot_z_cols]
 
 query_cols = ', '.join(all_cols)
-
+######################################################
 output_dir = '/monocle/exports/' # Uncomment these two lines before pushing to docker
 input_dir = '/monocle/'
 # output_dir = '/global/cscratch1/sd/eramey16/gradient/' # Comment these two lines before pushing to docker
 # input_dir='/global/cscratch1/sd/eramey16/gradient/'
 prosp_file = 'param_monocle.py'
 one_as = 0.0002777777778 # degrees per arcsecond
-
-##################################################
 
 #given an RA and DEC, pull magnitudes, magnitude uncertainties, redshifts from NOAO
 
@@ -183,7 +181,7 @@ def get_galaxy(ls_id, tag=None, engine=None):
             time.sleep(sleeptime)
     raise ValueError("Could not connect to the database")
 
-def merge_prospector(dr10_data, h5_file=None):
+def merge_prospector(dr10_data, h5_file=None, redo=False):
     """ Collects prospector data on a galaxy and merges it with dr10 data """
     basic_data = dr10_data.iloc[0] # Series of values
     
@@ -200,10 +198,11 @@ def merge_prospector(dr10_data, h5_file=None):
     
     # Data shortcuts
     # red_value = basic_data.z_phot_median
-    
+    import pdb; pdb.set_trace()
     # Run Prospector
-    if h5_file is None or not os.path.exists(h5_file):
-        h5_file = run_prospector(basic_data.ls_id, mags, mag_uncs)
+    if h5_file is None: h5_file = f'{output_dir}/{basic_data.ls_id}.h5'
+    if redo or not os.path.exists(h5_file):
+        h5_file = run_prospector(basic_data.ls_id, mags, mag_uncs, outfile=h5_file)
     
     # Read prospector file
     h5_data = reader.results_from(h5_file)
@@ -265,20 +264,23 @@ def update_db(bkdata, gal_data, engine=None):
     raise ValueError("Could not connect to the database")
     
 
-def run_prospector(ls_id, mags, mag_uncs, prosp_file=prosp_file, redshift=None):
+def run_prospector(ls_id, mags, mag_uncs, prosp_file=prosp_file, redshift=None, outfile=None):
     """ Runs prospector with provided parameters """
     # Input and output filenames
     pfile = os.path.join(input_dir, prosp_file)
-    outfile = os.path.join(output_dir, str(ls_id))
+    if outfile is None:
+    	outfile = os.path.join(output_dir, str(ls_id))
+    if output_dir not in outfile:
+        outfile = os.path.join(output_dir, outfile)
     
     # Run prospector with parameters
     # mags = ', '.join([str(x) for x in mags])
     # mag_uncs = ', '.join([str(x) for x in mag_uncs])
-    import pdb; pdb.set_trace()
+    
     if redshift is not None:
         cmd =  ['python', pfile, f'--object_redshift={redshift}', f'--mag_in={mags}', 
                 f' --mag_unc_in={mag_uncs}', f'--outfile={outfile}']
-        print("Running: ", cmd)
+        print("Running: ", ' '.join(cmd))
         subprocess.run(cmd, shell=False, check=True)
     else:
         cmd = ['python', pfile, f'--mag_in={mags}',
