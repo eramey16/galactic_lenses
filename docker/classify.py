@@ -20,7 +20,7 @@ import os
 import math
 import time
 
-import sqlalchemy
+import sqlalchemy as sa
 from sqlalchemy import text
 from sqlalchemy.pool import NullPool
 from sqlalchemy.exc import OperationalError
@@ -129,7 +129,7 @@ def query_galaxy(ra,dec,radius=one_as,cols=all_cols,trac_table="ls_dr10.tractor"
     # Save to DB
     if save is not None:
         if engine is None:
-            engine = sqlalchemy.create_engine(util.conn_string, poolclass=NullPool)
+            engine = sa.create_engine(util.conn_string, poolclass=NullPool)
         
     
     return trac_data
@@ -139,7 +139,7 @@ def get_galaxy(ls_id, tag=None, engine=None):
     """ Gets a galaxy and its data from the psql database """
     # Make a database connection
     if engine is None:
-        engine = sqlalchemy.create_engine(util.conn_string, poolclass=NullPool)
+        engine = sa.create_engine(util.conn_string, poolclass=NullPool)
     
     # Sleep first
     sleeptime = 5 + 15*np.random.rand()
@@ -199,10 +199,12 @@ def merge_prospector(dr10_data, h5_file=None, redo=False):
     # Data shortcuts
     # red_value = basic_data.z_phot_median
     # Run Prospector
-    if h5_file is None: h5_file = f'{output_dir}/{basic_data.ls_id}.h5'
+    if h5_file is None: h5_file = f'{output_dir}{basic_data.ls_id}.h5'
     if redo or not os.path.exists(h5_file):
         outfile = h5_file.replace('.h5', '') if '.h5' in h5_file else h5_file
         h5_file = run_prospector(basic_data.ls_id, mags, mag_uncs, outfile=outfile)
+    
+    import pdb; pdb.set_trace()
     
     # Read prospector file
     h5_data = reader.results_from(h5_file)
@@ -216,7 +218,7 @@ def update_db(bkdata, gal_data, engine=None):
     """ Updates the database using the bookkeeping and galaxy data provided """
     # Make a database connection
     if engine is None:
-        engine = sqlalchemy.create_engine(util.conn_string, poolclass=NullPool)
+        engine = sa.create_engine(util.conn_string, poolclass=NullPool)
     
     # Sleep first
     sleeptime = 5 + 15*np.random.rand()
@@ -255,6 +257,8 @@ def update_db(bkdata, gal_data, engine=None):
             # Update bookkeeping table
             stmt = f"UPDATE bookkeeping SET stage = 2 WHERE id = {str(bkdata.id)}"
             conn.execute(text(stmt))
+            
+            conn.commit()
 
             conn.close()
             return
@@ -316,10 +320,10 @@ if __name__ == "__main__":
     parser.add_argument("-rd", "--radius",type=float, default=0.0002777777778, help = "Radius for q3c radial query")
     parser.add_argument('-p', '--predict', action='store_true')
     parser.add_argument('-n', '--nodb', action='store_true')
-    parser.add_argument("-s","--save",type=str,default=None, help="Database table to save result")
+    parser.add_argument("-s","--save",type=str,default=None, help="Database table to use")
     
     # Start sqlalchemy engine
-    engine = sqlalchemy.create_engine(util.conn_string, poolclass=NullPool)
+    engine = sa.create_engine(util.conn_string, poolclass=NullPool)
     
     # Parse arguments
     args = parser.parse_args()
@@ -327,7 +331,7 @@ if __name__ == "__main__":
     if args.ls_id is not None:
         bkdata, tbldata = get_galaxy(args.ls_id, engine=engine)
     elif args.ra is not None and args.dec is not None:
-        query_galaxy(args.ra, args.dec, save=args.save)
+        query_galaxy(args.ra, args.dec, save=args.save) # TODO: fix this
     else:
         raise ValueError("User must provide either a valid LSID or values for RA and DEC.")
     

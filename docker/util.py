@@ -374,6 +374,7 @@ def bookkeeping_setup(table_name, engine=None, train=False, data=None, tag=None)
                                   tag=tag
                                 )
             conn.execute(stmt)
+            conn.commit()
 
 def add_to_table(table_name, data, engine=None, train=False, tag=None):
     if engine is None:
