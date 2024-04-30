@@ -198,11 +198,11 @@ def merge_prospector(dr10_data, h5_file=None, redo=False):
     
     # Data shortcuts
     # red_value = basic_data.z_phot_median
-    import pdb; pdb.set_trace()
     # Run Prospector
     if h5_file is None: h5_file = f'{output_dir}/{basic_data.ls_id}.h5'
     if redo or not os.path.exists(h5_file):
-        h5_file = run_prospector(basic_data.ls_id, mags, mag_uncs, outfile=h5_file)
+        outfile = h5_file.replace('.h5', '') if '.h5' in h5_file else h5_file
+        h5_file = run_prospector(basic_data.ls_id, mags, mag_uncs, outfile=outfile)
     
     # Read prospector file
     h5_data = reader.results_from(h5_file)
@@ -233,9 +233,11 @@ def update_db(bkdata, gal_data, engine=None):
 
             # Update galaxy table
             db_cols = [col.name for col in util.db_cols if col.name in list(gal_data.index)] # get usable columns of db
+            print(db_cols)
             update_data = gal_data[db_cols].copy()
             
             # Assemble psql statement
+            import pdb; pdb.set_trace()
             stmt = f"UPDATE {bkdata.tbl_name} SET "
             if 'type' in update_data: # string needs to be in quotes
                 update_data['type'] = f"'{update_data['type']}'"
