@@ -220,6 +220,9 @@ def update_db(bkdata, gal_data, engine=None):
     if engine is None:
         engine = sa.create_engine(util.conn_string, poolclass=NullPool)
     
+    bktbl = sa.Table('bookkeeping', sa.MetaData(), autoload_with=engine)
+    tbl = sa.Table(table_name, sa.MetaData(), autoload_with=engine)
+    
     # Sleep first
     sleeptime = 5 + 15*np.random.rand()
     time.sleep(sleeptime)
@@ -239,20 +242,22 @@ def update_db(bkdata, gal_data, engine=None):
             update_data = gal_data[db_cols].copy()
             
             # Assemble psql statement
-            import pdb; pdb.set_trace()
-            stmt = f"UPDATE {bkdata.tbl_name} SET "
-            if 'type' in update_data: # string needs to be in quotes
-                update_data['type'] = f"'{update_data['type']}'"
-            stmt += ', '.join([f"{col} = {update_data[col]}" 
-                               for col in db_cols])
-            stmt += f" WHERE id = {bkdata.tbl_id}"
+            # import pdb; pdb.set_trace()
+            stmt = sa.update(tbl).where(
+                tbl.c.id=bkdata.tbl_id).values(**update_data)
+            # stmt = f"UPDATE {bkdata.tbl_name} SET "
+            # if 'type' in update_data: # string needs to be in quotes
+            #     update_data['type'] = f"'{update_data['type']}'"
+            # stmt += ', '.join([f"{col} = {update_data[col]}" 
+            #                    for col in db_cols])
+            # stmt += f" WHERE id = {bkdata.tbl_id}"
             
-            if 'inf' in stmt:
-                stmt = stmt.replace('inf', "'infinity'")
-            if '-inf' in stmt:
-                stmt = stmt.replace('-inf', "'-infinity'")
+            # if 'inf' in stmt:
+            #     stmt = stmt.replace('inf', "'infinity'")
+            # if '-inf' in stmt:
+            #     stmt = stmt.replace('-inf', "'-infinity'")
             
-            conn.execute(text(stmt))
+            conn.execute(stmt)
 
             # Update bookkeeping table
             stmt = f"UPDATE bookkeeping SET stage = 2 WHERE id = {str(bkdata.id)}"

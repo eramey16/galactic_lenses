@@ -342,16 +342,7 @@ def bookkeeping_setup(table_name, engine=None, train=False, data=None, tag=None)
     meta = MetaData(conn)
     
     # Bookkeeping table columns
-    bktbl = Table("bookkeeping", meta,
-        Column('id', BIGINT, primary_key=True, autoincrement=True),
-        Column('tbl_id', BIGINT),
-        Column('tbl_name', String),
-        Column('ls_id', BIGINT),
-        Column('created', DateTime, default=func.now()),
-        Column('stage', INT, default=0),
-        Column('tag', String, default='untagged'),
-        Column('train', BOOLEAN),
-    )
+    bktbl = sa.Table('bookkeeping', sa.MetaData(), autoload_with=engine)
     
     # Create table if needed
     meta.create_all(conn, checkfirst=True)
