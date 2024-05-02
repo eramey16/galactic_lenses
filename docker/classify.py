@@ -31,9 +31,6 @@ import numpy as np
 
 import prospect.io.read_results as reader
 
-# from psycopg2.extensions import register_adapter, AsIs
-# register_adapter(np.int64, AsIs)
-
 bands = ['g', 'r', 'i', 'z', 'w1', 'w2']
 colors = ['g_r', 'i_z', 'r_i', 'r_z', 'w1_w2', 'z_w1']
 trac_cols = ['ls_id', 'ra', 'dec', 'type'] \
