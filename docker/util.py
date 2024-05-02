@@ -242,9 +242,9 @@ def clean_and_calc(data, duplicates=False, filter_cols=filter_cols,
             c_ = c.split('_')
             data[c] = data['dered_mag_'+c_[0]]-data['dered_mag_'+c_[-1]]
         
-        data.loc[data.z_phot_median<0, 'z_phot_median'] = np.nan
-        data.loc[data.z_phot_std<0, 'z_phot_std'] = np.nan
-        data.loc[data.z_spec<0, 'z_spec'] = np.nan
+        data.loc[data.z_phot_median<0, 'z_phot_median'] = None
+        data.loc[data.z_phot_std<0, 'z_phot_std'] = None
+        data.loc[data.z_spec<0, 'z_spec'] = None
         
         # Uncertainties
         for b in bands:

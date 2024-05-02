@@ -220,6 +220,7 @@ def merge_prospector(dr10_data, h5_file=None, redo=False):
     prosp_data = util.load_data(h5_data)
     
     dr10_data.loc[0, util.h5_cols[1:]] = prosp_data
+    dr10_data = dr10_data.replace(np.nan, None) # DB doesn't like NaNs
     
     return dr10_data
 
