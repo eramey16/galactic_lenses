@@ -52,7 +52,7 @@ phot_z_cols = ['z_phot_median_i AS z_phot_median', 'z_phot_std_i AS z_phot_std',
 all_cols = ['trac.'+col for col in trac_cols] + ['phot_z.'+col for col in phot_z_cols]
 
 query_cols = ', '.join(all_cols)
-######################################################
+
 output_dir = '/monocle/exports/' # Uncomment these two lines before pushing to docker
 input_dir = '/monocle/'
 # output_dir = '/global/cscratch1/sd/eramey16/gradient/' # Comment these two lines before pushing to docker
@@ -63,11 +63,20 @@ one_as = 0.0002777777778 # degrees per arcsecond
 #given an RA and DEC, pull magnitudes, magnitude uncertainties, redshifts from NOAO
 
 import numpy
+import psycopg2
 from psycopg2.extensions import register_adapter, AsIs
 def addapt_numpy_float64(numpy_float64):
     return AsIs(numpy_float64)
 def addapt_numpy_int64(numpy_int64):
     return AsIs(numpy_int64)
+def nan_to_null(f,
+        _NULL=psycopg2.extensions.AsIs('NULL'),
+        _Float=psycopg2.extensions.Float):
+    if not np.isnan(f):
+        return _Float(f)
+    return _NULL
+
+register_adapter(float, nan_to_null)
 register_adapter(numpy.float64, addapt_numpy_float64)
 register_adapter(numpy.int64, addapt_numpy_int64)
 
@@ -221,7 +230,7 @@ def update_db(bkdata, gal_data, engine=None):
         engine = sa.create_engine(util.conn_string, poolclass=NullPool)
     
     bktbl = sa.Table('bookkeeping', sa.MetaData(), autoload_with=engine)
-    tbl = sa.Table(table_name, sa.MetaData(), autoload_with=engine)
+    tbl = sa.Table(bkdata.tbl_name[0], sa.MetaData(), autoload_with=engine)
     
     # Sleep first
     sleeptime = 5 + 15*np.random.rand()
@@ -244,7 +253,7 @@ def update_db(bkdata, gal_data, engine=None):
             # Assemble psql statement
             # import pdb; pdb.set_trace()
             stmt = sa.update(tbl).where(
-                tbl.c.id=bkdata.tbl_id).values(**update_data)
+                tbl.c.id==bkdata.tbl_id).values(**update_data)
             # stmt = f"UPDATE {bkdata.tbl_name} SET "
             # if 'type' in update_data: # string needs to be in quotes
             #     update_data['type'] = f"'{update_data['type']}'"
