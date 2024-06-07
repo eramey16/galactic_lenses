@@ -339,7 +339,7 @@ if __name__ == "__main__":
     
     # Parse arguments
     args = parser.parse_args()
-    
+    start = time.time()
     if args.ls_id is not None:
         bkdata, tbldata = get_galaxy(args.ls_id, engine=engine)
     elif args.ra is not None and args.dec is not None:
@@ -364,3 +364,4 @@ if __name__ == "__main__":
         update_db(bkdata, gal_data, engine=engine)
     
     engine.dispose()
+    print(f"\nFinished {gal_data['ls_id']} in {(time.time()-start)/3600} hrs\n")

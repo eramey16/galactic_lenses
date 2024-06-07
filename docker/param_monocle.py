@@ -8,6 +8,7 @@ import sedpy
 import h5py, astropy
 import numpy as np
 import pandas as pd
+import time
 # import classify
 # import util
 from dl import queryClient as qc, helpers
@@ -468,10 +469,12 @@ if __name__=='__main__':
         size = comm.Get_size()
 
         withmpi = comm.Get_size() > 1
+        start = MPI.Wtime()
     except ImportError as e:
         print('Failed to start MPI; are mpi4py and schwimmbad installed? Proceeding without MPI.')
         print(f'Message: {e}')
         withmpi = False
+        start = time.time()
 
 #     # Evaluate SPS over logzsol grid in order to get necessary data in cache/memory
 #     # for each MPI process. Otherwise, you risk creating a lag between the MPI tasks
@@ -517,6 +520,7 @@ if __name__=='__main__':
                                                  stop_function=stopping_function,
                                                  wt_function=weight_function,
                                                  **run_params)
+        runtime = (MPI.Wtime()-start)/60.0
     else:
         run_params.update(dict(nlive_init=400, nested_method="rwalk", 
                                nested_target_n_effective=1000, nested_dlogz_init=0.05))
@@ -524,8 +528,10 @@ if __name__=='__main__':
                                                  stop_function=stopping_function,
                                                  wt_function=weight_function,
                                                  **run_params)
+        runtime = (time.time()-start)/60.0
 
     print(output)
+    print("Prospector finished in {runtime:.4f} minutes")
 
     from prospect.io import write_results as writer
     hfile = args.outfile+'.h5'
