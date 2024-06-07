@@ -10,6 +10,7 @@ import sys
 import h5py
 import psycopg2
 import corner
+import numpy.ma as ma
 from sqlalchemy import create_engine, Column, Table, MetaData, text
 from sqlalchemy import String, DateTime
 from sqlalchemy.types import BIGINT, FLOAT, REAL, VARCHAR, BOOLEAN, INT
@@ -204,7 +205,10 @@ def load_data(gal_results):
     
     # Calculate secondary results
     # Get reduced chi^2 between maggies and fit
-    rchisq = np.sum((bf['photometry'] - obs['maggies'])**2 / obs['maggies_unc']**2) / (len(bf['photometry'])-1)
+    phot = ma.masked_invalid(bf['photometry'])
+    mags = ma.masked_invalid(obs['maggies'])
+    mags_unc = ma.masked_invalid(obs['maggies_unc'])
+    rchisq = np.sum((phot - mags)**2 / mags_unc**2) / (phot.count()-1)
     
     # Define function for quantiles (0.16, 0.5, 0.84)
     def calc_quantiles(x):

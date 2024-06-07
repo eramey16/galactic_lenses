@@ -13,7 +13,7 @@ import sqlalchemy
 conn_string = 'postgresql+psycopg2://lensed_db_admin@nerscdb03.nersc.gov/lensed_db'
 
 ### String to repeat in taskfarmer file
-shft_cmd = "shifter --image=eramey16/monocle:latest --volume='{}:/gradient_boosted/exports' /opt/conda/bin/python /gradient_boosted/classify.py --ls_id={}"
+shft_cmd = "shifter --image=eramey16/monocle:latest --volume='{}:/monocle/exports' /opt/conda/bin/python /monocle/classify.py --ls_id={}"
 task_filename = ["tasks", ".txt"]
 coord_filename = ["coords", ".csv"]
 
@@ -33,7 +33,7 @@ def process_tsv(file, dest):
     return radec
 
 def fill_tasks(gal_data, dest, tag=''):
-    """ Fills in shifter tasks with the ra and dec info in file """
+    """ Fills in shifter tasks with the data provided """
     # Read in galaxy file
     if isinstance(gal_data, str):
         print(gal_data)
@@ -62,11 +62,12 @@ def fill_tasks(gal_data, dest, tag=''):
     # Save file commands
     return tasks
 
-def fill_from_db(dest, tag=''):
+def fill_from_db(dest, tag='', query=None):
     engine = sqlalchemy.create_engine(conn_string)
     conn = engine.connect()
     
-    query = f"SELECT * FROM bookkeeping WHERE stage=1"
+    if query is None:
+        query = f"SELECT * FROM bookkeeping WHERE stage=1"
     if tag: query+=f" AND tag={tag}"
     
     bkdata = pd.DataFrame(conn.execute(query))
@@ -103,7 +104,7 @@ def save_batches(tasks, n_batches, data_dir='.', dest_filename=task_filename):
         # Reset start
         start = end
 
-def prep_run(file=None, dest=None, tag='', radius=None, batch=None, masterlens=False):
+def prep_run(file=None, dest=None, tag='', radius=None, batch=None, masterlens=False, query=None):
     # Check arguments
     if dest is None:
         if file is not None:
@@ -135,14 +136,14 @@ def prep_run(file=None, dest=None, tag='', radius=None, batch=None, masterlens=F
     if file is not None: # Fill tasks from data in file
         tasks = fill_tasks(file, dest, tag)
     else: # Fill tasks from data in db
-        tasks = fill_from_db(dest, tag)
+        tasks = fill_from_db(dest=dest, tag=tag, query=query)
     
     
     # Save in batches
     if batch is not None:
         save_batches(tasks, batch, data_dir=dest)
     else:
-        raise ValueError("Non-batch saving not implemented")
+        save_batches(tasks, 1, data_dir=dest)
     
 if __name__=='__main__':
     # Parse command line arguments
@@ -153,6 +154,7 @@ if __name__=='__main__':
                         help = "Source file for target galaxies (must include RA and DEC).")
     parser.add_argument("-d", "--dest", nargs='?', type=str, default=None,
                         help = "Destination folder for generated lens files.")
+    parser.add_argument("-q", "--query", type=str, default=None, help='query for bookkeeping database')
     parser.add_argument("-t", "--tag", nargs='?', type=str, default = '', 
                         help = "Tag for database lookup.")
     parser.add_argument("-rd", "--radius", nargs='?', type=str, default='.000277778', 
