@@ -531,7 +531,7 @@ if __name__=='__main__':
         runtime = (time.time()-start)/60.0
 
     print(output)
-    print("Prospector finished in {runtime:.4f} minutes")
+    print(f"Prospector finished in {runtime:.4f} minutes")
 
     from prospect.io import write_results as writer
     hfile = args.outfile+'.h5'

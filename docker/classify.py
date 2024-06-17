@@ -187,7 +187,7 @@ def get_galaxy(ls_id, tag=None, engine=None):
             time.sleep(sleeptime)
     raise ValueError("Could not connect to the database")
 
-def merge_prospector(dr10_data, h5_file=None, redo=False):
+def merge_prospector(dr10_data, h5_file=None, redo=False, nodes=0):
     """ Collects prospector data on a galaxy and merges it with dr10 data """
     basic_data = dr10_data.iloc[0] # Series of values
     
@@ -208,9 +208,9 @@ def merge_prospector(dr10_data, h5_file=None, redo=False):
     if h5_file is None: h5_file = f'{output_dir}{basic_data.ls_id}.h5'
     if redo or not os.path.exists(h5_file):
         outfile = h5_file.replace('.h5', '') if '.h5' in h5_file else h5_file
-        h5_file = run_prospector(basic_data.ls_id, mags, mag_uncs, outfile=outfile)
+        h5_file = run_prospector(basic_data.ls_id, mags, mag_uncs, nodes=nodes, outfile=outfile)
     
-    import pdb; pdb.set_trace()
+    # import pdb; pdb.set_trace()
     
     # Read prospector file
     h5_data = reader.results_from(h5_file)
@@ -282,12 +282,13 @@ def update_db(bkdata, gal_data, engine=None):
     raise ValueError("Could not connect to the database")
     
 
-def run_prospector(ls_id, mags, mag_uncs, prosp_file=prosp_file, redshift=None, outfile=None):
+def run_prospector(ls_id, mags, mag_uncs, prosp_file=prosp_file, 
+                   redshift=None, nodes=0, outfile=None):
     """ Runs prospector with provided parameters """
     # Input and output filenames
     pfile = os.path.join(input_dir, prosp_file)
     if outfile is None:
-    	outfile = os.path.join(output_dir, str(ls_id))
+        outfile = os.path.join(output_dir, str(ls_id))
     if output_dir not in outfile:
         outfile = os.path.join(output_dir, outfile)
     
@@ -295,16 +296,15 @@ def run_prospector(ls_id, mags, mag_uncs, prosp_file=prosp_file, redshift=None, 
     # mags = ', '.join([str(x) for x in mags])
     # mag_uncs = ', '.join([str(x) for x in mag_uncs])
     
-    if redshift is not None:
-        cmd =  ['python', pfile, f'--object_redshift={redshift}', f'--mag_in={mags}', 
-                f' --mag_unc_in={mag_uncs}', f'--outfile={outfile}']
-        print("Running: ", ' '.join(cmd))
-        subprocess.run(cmd, shell=False, check=True)
-    else:
-        cmd = ['python', pfile, f'--mag_in={mags}',
+    cmd = ['python', pfile, f'--mag_in={mags}',
                 f'--mag_unc_in={mag_uncs}', f'--outfile={outfile}']
-        print("Running: ", cmd) 
-        subprocess.run(cmd, shell=False, check=True) 
+    
+    if redshift is not None:
+        cmd.insert(f'--object_redshift={redshift}', 2)
+    if nodes!=0:
+        cmd.insert(f'mpirun -n {nodes}')
+    print("Running: ", ' '.join(cmd))
+    subprocess.run(cmd, shell=False, check=True)
     
     return outfile +'.h5'
 
@@ -330,8 +330,10 @@ if __name__ == "__main__":
     parser.add_argument("-r","--ra",type=float, help = "RA selection")
     parser.add_argument("-d","--dec",type=float, help="DEC selection")
     parser.add_argument("-rd", "--radius",type=float, default=0.0002777777778, help = "Radius for q3c radial query")
+    parser.add_argument('-n', '--nodes', type=int, default=0,
+                        help='Number of nodes for MPI run (0 means no MPI)')
     parser.add_argument('-p', '--predict', action='store_true')
-    parser.add_argument('-n', '--nodb', action='store_true')
+    parser.add_argument('--nodb', action='store_true')
     parser.add_argument("-s","--save",type=str,default=None, help="Database table to use")
     
     # Start sqlalchemy engine

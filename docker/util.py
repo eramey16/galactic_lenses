@@ -11,6 +11,7 @@ import h5py
 import psycopg2
 import corner
 import numpy.ma as ma
+import sqlalchemy as sa
 from sqlalchemy import create_engine, Column, Table, MetaData, text
 from sqlalchemy import String, DateTime
 from sqlalchemy.types import BIGINT, FLOAT, REAL, VARCHAR, BOOLEAN, INT
@@ -18,6 +19,9 @@ from sqlalchemy.sql import func
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.pool import NullPool
 import prospect.io.read_results as reader
+
+from psycopg2.extensions import register_adapter, AsIs
+register_adapter(np.int64, AsIs)
 
 Base = declarative_base()
 
@@ -433,13 +437,39 @@ def save_to_db(path, db_name, lim=None, delete=False):
     
     conn.close()
 
-def read_table(db_name, engine=None):
+def print_cmd(ls_id, engine=None, tag=None):
+    
+    if engine is None:
+        engine = create_engine(conn_string, poolclass=NullPool)
+    
+    bktbl = sa.Table('bookkeeping', sa.MetaData(), autoload_with=engine)
+    
+    stmt = sa.select(bktbl).where(bktbl.c.ls_id==ls_id)
+    bkdata = pd.read_sql(stmt, engine)
+    
+    if bkdata.empty: raise ValueError(f"LS ID not found: {ls_id}")
+    elif tag is not None:
+        bkdata = bkdata[bkdata.tag==tag]
+    if len(bkdata) > 1:
+        raise ValueError(f"Too many values found for LS ID {ls_id}, " \
+                            "please provide a tag (or fix the database)")
+    
+    tbl_name = bkdata.tbl_name[0]
+    tbl = sa.Table(tbl_name, sa.MetaData(), autoload_with=engine)
+    stmt = sa.select(tbl).where(tbl.c.id==bkdata.tbl_id[0])
+    gal = pd.read_sql(stmt, engine).iloc[0]
+    
+    return f"--mag_in=\"{list(gal[['dered_mag_'+b for b in bands]])}\" " \
+          f"--mag_unc_in=\"{list(2.5 / np.log(10) / np.array([gal['snr_'+b] for b in bands]))}\" "
+    
+
+def read_table(tbl_name, engine=None):
     """ Reads a pandas table in from a database """
     
     if engine is None:
         engine = create_engine(conn_string, poolclass=NullPool)
     
-    data = pd.read_sql(f"SELECT * from {db_name}", engine)
+    data = pd.read_sql(f"SELECT * from {tbl_name}", engine)
     
     return data
 
