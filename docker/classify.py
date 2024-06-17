@@ -300,9 +300,9 @@ def run_prospector(ls_id, mags, mag_uncs, prosp_file=prosp_file,
                 f'--mag_unc_in={mag_uncs}', f'--outfile={outfile}']
     
     if redshift is not None:
-        cmd.insert(f'--object_redshift={redshift}', 2)
+        cmd.insert(2, f'--object_redshift={redshift}')
     if nodes!=0:
-        cmd.insert(f'mpirun -n {nodes}')
+        cmd.insert(0, f'mpirun -n {nodes}')
     print("Running: ", ' '.join(cmd))
     subprocess.run(cmd, shell=False, check=True)
     
