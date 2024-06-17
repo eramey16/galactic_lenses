@@ -245,7 +245,6 @@ def update_db(bkdata, gal_data, engine=None):
 
             # Update galaxy table
             db_cols = [col.name for col in util.db_cols if col.name in list(gal_data.index)] # get usable columns of db
-            print(db_cols)
             update_data = gal_data[db_cols].copy()
             
             # Assemble psql statement
@@ -296,15 +295,15 @@ def run_prospector(ls_id, mags, mag_uncs, prosp_file=prosp_file,
     # mags = ', '.join([str(x) for x in mags])
     # mag_uncs = ', '.join([str(x) for x in mag_uncs])
     
-    cmd = ['python', pfile, f'--mag_in={mags}',
-                f'--mag_unc_in={mag_uncs}', f'--outfile={outfile}']
+    cmd = ['python', pfile, f'--mag_in="{mags}"',
+                f'--mag_unc_in="{mag_uncs}"', f'--outfile={outfile}']
     
     if redshift is not None:
         cmd.insert(2, f'--object_redshift={redshift}')
     if nodes!=0:
         cmd.insert(0, f'mpirun -n {nodes}')
     print("Running: ", ' '.join(cmd))
-    subprocess.run(cmd, shell=False, check=True)
+    subprocess.call(' '.join(cmd), shell=True, env=os.environ)
     
     return outfile +'.h5'
 
@@ -320,6 +319,36 @@ def predict(gal_data, model_file=None, thresh=0.05):
     pred = clf.predict_proba(pred_data)[:,0] < thresh
     
     return pred
+
+def run(ls_id=None, ra=None, dec=None, radius=None, nodes=0, 
+        predict=False, nodb=False, save=None):
+    
+    start = time.time()
+    if ls_id is not None:
+        bkdata, tbldata = get_galaxy(ls_id, engine=engine)
+    elif ra is not None and dec is not None:
+        query_galaxy(ra, dec, save=save) # TODO: fix this
+    else:
+        raise ValueError("User must provide either a valid LSID or values for RA and DEC.")
+    
+    # Output file names
+    h5_file = os.path.join(output_dir, f'{ls_id}.h5')
+    # basic_file = os.path.join(output_dir, f'{ls_id}.csv')
+    
+    # Run/read prospector file and get full dataframe
+    gal_data = merge_prospector(tbldata, nodes=nodes)
+    
+    # Test on RF model
+    if predict:
+        pred = predict(gal_data)
+        gal_data['lensed'] = pred
+    
+    # Write output to database
+    if not nodb:
+        update_db(bkdata, gal_data, engine=engine)
+    
+    engine.dispose()
+    print(f"\nFinished {gal_data['ls_id'][0]} in {(time.time()-start)/60} min\n")
 
 
 ### MAIN FUNCTION
@@ -341,29 +370,5 @@ if __name__ == "__main__":
     
     # Parse arguments
     args = parser.parse_args()
-    start = time.time()
-    if args.ls_id is not None:
-        bkdata, tbldata = get_galaxy(args.ls_id, engine=engine)
-    elif args.ra is not None and args.dec is not None:
-        query_galaxy(args.ra, args.dec, save=args.save) # TODO: fix this
-    else:
-        raise ValueError("User must provide either a valid LSID or values for RA and DEC.")
     
-    # Output file names
-    h5_file = os.path.join(output_dir, f'{args.ls_id}.h5')
-    # basic_file = os.path.join(output_dir, f'{args.ls_id}.csv')
-    
-    # Run/read prospector file and get full dataframe
-    gal_data = merge_prospector(tbldata, nodes=args.nodes)
-    
-    # Test on RF model
-    if args.predict:
-        pred = predict(gal_data)
-        gal_data['lensed'] = pred
-    
-    # Write output to database
-    if not args.nodb:
-        update_db(bkdata, gal_data, engine=engine)
-    
-    engine.dispose()
-    print(f"\nFinished {gal_data['ls_id']} in {(time.time()-start)/3600} hrs\n")
+    run(**vars(args))

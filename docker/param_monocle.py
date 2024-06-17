@@ -335,7 +335,7 @@ def load_obs(spec = False, spec_file = None, maskspec=False, phottable=None,
     obs['spectrum'] = None
     obs['unc'] = None
     
-    print(obs)
+    print("Loaded observation")
     return(obs)
 
 def dust2_to_dust1(dust2=None, **kwargs):
@@ -352,7 +352,7 @@ def tmax_to_tage(tmax=None,zred=None,**kwargs):
 def load_sps(zcontinuous=1, compute_vega_mags=False, **extras):
     sps = CSPSpecBasis(zcontinuous=zcontinuous,
                        compute_vega_mags=compute_vega_mags)
-    print(sps.ssp.libraries)
+    print("Loaded SPS libraries")
     return sps
 
 def load_gp(**extras):
@@ -530,7 +530,7 @@ if __name__=='__main__':
                                                  **run_params)
         runtime = (time.time()-start)/60.0
 
-    print(output)
+    # print(output)
     print(f"Prospector finished in {runtime:.4f} minutes")
 
     from prospect.io import write_results as writer
