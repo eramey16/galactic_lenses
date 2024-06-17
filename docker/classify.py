@@ -354,7 +354,7 @@ if __name__ == "__main__":
     # basic_file = os.path.join(output_dir, f'{args.ls_id}.csv')
     
     # Run/read prospector file and get full dataframe
-    gal_data = merge_prospector(tbldata)
+    gal_data = merge_prospector(tbldata, nodes=args.nodes)
     
     # Test on RF model
     if args.predict:
