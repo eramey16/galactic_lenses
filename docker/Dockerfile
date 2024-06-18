@@ -11,7 +11,7 @@ RUN \
         build-essential      \
         gfortran             \
         nano                 \
-        vim
+        vim                  \
         wget              && \
     apt-get clean all
 
