@@ -31,7 +31,7 @@ RUN \
     wget https://www.mpich.org/static/downloads/$mpich/$mpich_prefix.tar.gz && \
     tar xvzf $mpich_prefix.tar.gz                                           && \
     cd $mpich_prefix                                                        && \
-    ./configure                                                             && \
+    ./configure  FFLAGS=-fallow-argument-mismatch  FCFLAGS=-fallow-argument-mismatch  && \
     make -j 4                                                               && \
     make install                                                            && \
     make clean                                                              && \
