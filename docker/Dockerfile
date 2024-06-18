@@ -13,11 +13,9 @@ RUN \
 
 # Install astroconda
 RUN conda config --add channels http://ssb.stsci.edu/astroconda
-RUN conda install python ipython
-RUN conda install numpy pandas scipy astropy 
-RUN conda install h5py hdf5
+RUN conda install -y python ipython numpy pandas scipy astropy h5py hdf5
 
-RUN conda install -c conda-forge emcee dynesty schwimmbad
+RUN conda install -y -c conda-forge emcee dynesty schwimmbad
 
 RUN python -m pip install astro-sedpy
 
@@ -44,8 +42,8 @@ RUN conda install -c conda-forge mpi4py six curl schwimmbad
 
 RUN python -m pip install astro-prospector noaodatalab
 
-RUN conda install -c astropy astroquery corner
-RUN conda install sqlalchemy psycopg2 requests scikit-learn
+RUN conda install -y -c astropy astroquery corner
+RUN conda install -y sqlalchemy psycopg2 requests scikit-learn
 
 ADD classify.py /monocle/classify.py
 ADD gallazzi_05_massmet.txt /monocle/gallazzi_05_massmet.txt
