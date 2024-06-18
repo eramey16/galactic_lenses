@@ -8,11 +8,7 @@ SHELL ["/bin/bash", "-c"]
 RUN \
     apt-get update        && \
     apt-get install --yes    \
-        build-essential      \
-        gfortran             \
-        nano                 \
-        vim                  \
-        wget              && \
+        build-essential gfortran nano vim wget && \
     apt-get clean all
 
 # Install astroconda
@@ -30,8 +26,8 @@ ENV SPS_HOME '/fsps'
 RUN git clone https://github.com/cconroy20/fsps.git
 RUN python -m pip install fsps
 
-ARG mpich=4.0.2
-ARG mpich_prefix=mpich-$mpich
+ENV mpich=4.0.2
+ENV mpich_prefix=mpich-$mpich
 
 RUN \
     wget https://www.mpich.org/static/downloads/$mpich/$mpich_prefix.tar.gz && \
