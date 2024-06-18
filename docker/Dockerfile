@@ -2,8 +2,18 @@ FROM continuumio/miniconda3:latest
 
 SHELL ["/bin/bash", "-c"]
 
-RUN apt-get update
-RUN apt-get install -y gfortran nano vim
+# RUN apt-get update
+# RUN apt-get install -y gfortran nano vim
+
+RUN \
+    apt-get update        && \
+    apt-get install --yes    \
+        build-essential      \
+        gfortran             \
+        nano                 \
+        vim
+        wget              && \
+    apt-get clean all
 
 # Install astroconda
 RUN conda config --add channels http://ssb.stsci.edu/astroconda
@@ -20,7 +30,21 @@ ENV SPS_HOME '/fsps'
 RUN git clone https://github.com/cconroy20/fsps.git
 RUN python -m pip install fsps
 
-RUN conda install -c conda-forge mpi mpi4py mpich six curl schwimmbad
+ARG mpich=4.0.2
+ARG mpich_prefix=mpich-$mpich
+
+RUN \
+    wget https://www.mpich.org/static/downloads/$mpich/$mpich_prefix.tar.gz && \
+    tar xvzf $mpich_prefix.tar.gz                                           && \
+    cd $mpich_prefix                                                        && \
+    ./configure                                                             && \
+    make -j 4                                                               && \
+    make install                                                            && \
+    make clean                                                              && \
+    cd ..                                                                   && \
+    rm -rf $mpich_prefix
+
+RUN conda install -c conda-forge mpi4py six curl schwimmbad
 
 RUN python -m pip install astro-prospector noaodatalab
 
