@@ -54,7 +54,7 @@ output_dir = '/monocle/exports/' # Uncomment these two lines before pushing to d
 input_dir = '/monocle/'
 # output_dir = '/global/cscratch1/sd/eramey16/gradient/' # Comment these two lines before pushing to docker
 # input_dir='/global/cscratch1/sd/eramey16/gradient/'
-prosp_file = 'param_monocle.py'
+default_pfile = os.path.join(input_dir, 'param_monocle.py')
 one_as = 0.0002777777778 # degrees per arcsecond
 
 #given an RA and DEC, pull magnitudes, magnitude uncertainties, redshifts from NOAO
@@ -187,7 +187,7 @@ def get_galaxy(ls_id, tag=None, engine=None):
             time.sleep(sleeptime)
     raise ValueError("Could not connect to the database")
 
-def merge_prospector(dr10_data, h5_file=None, redo=False, nodes=0):
+def merge_prospector(dr10_data, h5_file=None, redo=False, nodes=0, **kwargs):
     """ Collects prospector data on a galaxy and merges it with dr10 data """
     basic_data = dr10_data.iloc[0] # Series of values
     
@@ -197,10 +197,14 @@ def merge_prospector(dr10_data, h5_file=None, redo=False, nodes=0):
     # magnitudes, uncertainties, and fluxes
     mags = [basic_data['dered_mag_'+b] for b in bands]
     mag_uncs = list(2.5 / np.log(10) / np.array([basic_data['snr_'+b] for b in bands]))
+    if kwargs['inflate_err']>1:
+        mag_uncs = [x*kwargs['inflate_err'] for x in mag_uncs]
     # fluxes = [basic_data['dered_flux_'+b] for b in bands]
     
     # Print
     print(f'Redshift: {basic_data.z_phot_median}')
+    
+    redshift = basic_data.z_phot_median if kwargs['use_redshift'] else None
     
     # Data shortcuts
     # red_value = basic_data.z_phot_median
@@ -208,7 +212,8 @@ def merge_prospector(dr10_data, h5_file=None, redo=False, nodes=0):
     if h5_file is None: h5_file = f'{output_dir}{basic_data.ls_id}.h5'
     if redo or not os.path.exists(h5_file):
         outfile = h5_file.replace('.h5', '') if '.h5' in h5_file else h5_file
-        h5_file = run_prospector(basic_data.ls_id, mags, mag_uncs, nodes=nodes, outfile=outfile)
+        h5_file = run_prospector(basic_data.ls_id, mags, mag_uncs, nodes=nodes, 
+                                 redshift=redshift, outfile=outfile, **kwargs)
     
     # import pdb; pdb.set_trace()
     
@@ -281,11 +286,11 @@ def update_db(bkdata, gal_data, engine=None):
     raise ValueError("Could not connect to the database")
     
 
-def run_prospector(ls_id, mags, mag_uncs, prosp_file=prosp_file, 
-                   redshift=None, nodes=0, outfile=None):
+def run_prospector(ls_id, mags, mag_uncs, prosp_file=default_pfile, redshift=None, 
+                   nodes=0, outfile=None, effective_samples=1000, **kwargs):
     """ Runs prospector with provided parameters """
     # Input and output filenames
-    pfile = os.path.join(input_dir, prosp_file)
+    if prosp_file is None: prosp_file = default_pfile
     if outfile is None:
         outfile = os.path.join(output_dir, str(ls_id))
     if output_dir not in outfile:
@@ -295,8 +300,9 @@ def run_prospector(ls_id, mags, mag_uncs, prosp_file=prosp_file,
     # mags = ', '.join([str(x) for x in mags])
     # mag_uncs = ', '.join([str(x) for x in mag_uncs])
     
-    cmd = ['python', pfile, f'--mag_in="{mags}"',
-                f'--mag_unc_in="{mag_uncs}"', f'--outfile={outfile}']
+    cmd = ['python', prosp_file, f'--effective_samples={effective_samples}',
+           f'--mag_in="{mags}"', f'--mag_unc_in="{mag_uncs}"',
+           f'--outfile={outfile}']
     
     if redshift is not None:
         cmd.insert(2, f'--object_redshift={redshift}')
@@ -321,7 +327,7 @@ def predict(gal_data, model_file=None, thresh=0.05):
     return pred
 
 def run(ls_id=None, ra=None, dec=None, radius=None, nodes=0, 
-        predict=False, nodb=False, save=None):
+        predict=False, nodb=False, save=None, **kwargs):
     
     start = time.time()
     if ls_id is not None:
@@ -336,7 +342,7 @@ def run(ls_id=None, ra=None, dec=None, radius=None, nodes=0,
     # basic_file = os.path.join(output_dir, f'{ls_id}.csv')
     
     # Run/read prospector file and get full dataframe
-    gal_data = merge_prospector(tbldata, nodes=nodes)
+    gal_data = merge_prospector(tbldata, nodes=nodes, **kwargs)
     
     # Test on RF model
     if predict:
@@ -361,6 +367,13 @@ if __name__ == "__main__":
     parser.add_argument("-rd", "--radius",type=float, default=0.0002777777778, help = "Radius for q3c radial query")
     parser.add_argument('-n', '--nodes', type=int, default=0,
                         help='Number of nodes for MPI run (0 means no MPI)')
+    parser.add_argument('-e', '--effective_samples', type=int, default=1000, 
+                        help='Same as --nested_target_n_effective in Prospector run')
+    parser.add_argument('--inflate_err', type=int, default=1, 
+                        help="Factor to inflate errors for prospector run")
+    parser.add_argument('--use_redshift', action='store_true', 
+                        help="If present, prospector will use redshift in its calculations")
+    parser.add_argument('--prosp_file', type=str, default=None, help='File to use for running prospector')
     parser.add_argument('-p', '--predict', action='store_true')
     parser.add_argument('--nodb', action='store_true')
     parser.add_argument("-s","--save",type=str,default=None, help="Database table to use")
@@ -370,5 +383,5 @@ if __name__ == "__main__":
     
     # Parse arguments
     args = parser.parse_args()
-    
+    # print(args)
     run(**vars(args))

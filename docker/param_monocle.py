@@ -85,7 +85,8 @@ run_params = {'verbose':True,
               'nested_bootstrap': 0,
               'nested_dlogz_init': 0.05,
               'nested_weight_kwargs': {"pfrac": 1.0},
-              'nested_stop_kwargs': {"post_thresh": 0.1}, # Getting an error here
+              # 'nested_stop_kwargs': {"post_thresh": 0.1}, # Getting an error here
+              'nested_stop_kwargs': {"target_n_effective": 100000},
               # SPS parameters
               'zcontinuous': 1
               }
@@ -438,8 +439,11 @@ if __name__=='__main__':
                         help=("Redshift for the model"))
     parser.add_argument('--mag_in', default=None, type=str)
     parser.add_argument('--mag_unc_in', default=None, type=str)
+    parser.add_argument('--effective_samples', default=100000, type=int)
     
     args = parser.parse_args()
+    print(args)
+    # run_params['nested_target_n_effective'] = args.nested_target_n_effective
     
     spec_noise, phot_noise = load_gp(**run_params)
     obs = load_obs(args=args, **run_params)
@@ -497,11 +501,13 @@ if __name__=='__main__':
     # from functools import partial
     # lnprobfn_fixed = partial(lnprobfn, sps=sps)
     
-    run_params['nested_stop_kwargs'] = {"post_thresh": 0.1}
+    run_params['nested_stop_kwargs'] = {"target_n_effective": args.effective_samples}
     def new_lnfn(x):
         return lnprobfn(x, model=model, obs=obs)
     def new_prior(u):
         return prior_transform(u, model=model)
+    
+    # run_params['nested_target_n_effective'] = args.nested_target_n_effective
 
     if withmpi:
         run_params["using_mpi"] = True
@@ -513,17 +519,16 @@ if __name__=='__main__':
                 sys.exit(0)
             nprocs = pool.size
             # The parent process will oversee the fitting
-            run_params.update(dict(nlive_init=400, nested_method="rwalk", 
-                                   nested_target_n_effective=1000, nested_dlogz_init=0.05))
+            run_params.update(dict(nlive_init=400, nested_method="rwalk", nested_dlogz_init=0.05))
             output = fitting.run_dynesty_sampler(new_lnfn, new_prior, model.ndim,
                                                  pool=pool, queue_size=nprocs, 
                                                  stop_function=stopping_function,
                                                  wt_function=weight_function,
                                                  **run_params)
+        print(run_params)
         runtime = (MPI.Wtime()-start)/60.0
     else:
-        run_params.update(dict(nlive_init=400, nested_method="rwalk", 
-                               nested_target_n_effective=1000, nested_dlogz_init=0.05))
+        run_params.update(dict(nlive_init=400, nested_method="rwalk", nested_dlogz_init=0.05))
         output = fitting.run_dynesty_sampler(new_lnfn, new_prior, model.ndim, 
                                                  stop_function=stopping_function,
                                                  wt_function=weight_function,
@@ -532,6 +537,7 @@ if __name__=='__main__':
 
     # print(output)
     print(f"Prospector finished in {runtime:.4f} minutes")
+    print(f"Run params: {run_params}")
 
     from prospect.io import write_results as writer
     hfile = args.outfile+'.h5'
