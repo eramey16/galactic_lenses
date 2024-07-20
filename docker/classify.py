@@ -287,7 +287,7 @@ def update_db(bkdata, gal_data, engine=None):
     
 
 def run_prospector(ls_id, mags, mag_uncs, prosp_file=default_pfile, redshift=None, 
-                   nodes=0, outfile=None, effective_samples=1000, **kwargs):
+                   nodes=0, outfile=None, effective_samples=10000, **kwargs):
     """ Runs prospector with provided parameters """
     # Input and output filenames
     if prosp_file is None: prosp_file = default_pfile
@@ -367,7 +367,7 @@ if __name__ == "__main__":
     parser.add_argument("-rd", "--radius",type=float, default=0.0002777777778, help = "Radius for q3c radial query")
     parser.add_argument('-n', '--nodes', type=int, default=0,
                         help='Number of nodes for MPI run (0 means no MPI)')
-    parser.add_argument('-e', '--effective_samples', type=int, default=1000, 
+    parser.add_argument('-e', '--effective_samples', type=int, default=10000, 
                         help='Same as --nested_target_n_effective in Prospector run')
     parser.add_argument('--inflate_err', type=int, default=1, 
                         help="Factor to inflate errors for prospector run")

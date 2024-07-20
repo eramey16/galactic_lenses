@@ -121,7 +121,6 @@ class MassMet(priors.Prior):
         return [a, b]
 
     @property
-    
     def range(self):
         return ((self.params['mass_mini'], self.params['mass_maxi']),\
 
@@ -432,6 +431,12 @@ def halt(message):
         pass
     sys.exit(0)
 
+def run(mag_in, mag_unc_in, redshift=None, effective_samples=10000, outfile='monocle'):
+    """
+    Runs prospector with passed photometry and settings
+    """
+    pass
+
 if __name__=='__main__':
     
     parser = prospect_args.get_parser()
@@ -439,11 +444,10 @@ if __name__=='__main__':
                         help=("Redshift for the model"))
     parser.add_argument('--mag_in', default=None, type=str)
     parser.add_argument('--mag_unc_in', default=None, type=str)
-    parser.add_argument('--effective_samples', default=100000, type=int)
+    parser.add_argument('--effective_samples', default=10000, type=int)
     
     args = parser.parse_args()
     print(args)
-    # run_params['nested_target_n_effective'] = args.nested_target_n_effective
     
     spec_noise, phot_noise = load_gp(**run_params)
     obs = load_obs(args=args, **run_params)
