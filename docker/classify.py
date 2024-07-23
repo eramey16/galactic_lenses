@@ -218,8 +218,11 @@ def merge_prospector(dr10_data, h5_file=None, redo=False, nodes=0, **kwargs):
     # import pdb; pdb.set_trace()
     
     # Read prospector file
-    h5_data = reader.results_from(h5_file)
-    prosp_data = util.load_data(h5_data)
+    try:
+        h5_data = reader.results_from(h5_file)
+        prosp_data = util.load_data(h5_data)
+    except Exception as e:
+        raise RuntimeError(f"Prospector run failed")
     
     dr10_data.loc[0, util.h5_cols[1:]] = prosp_data
     dr10_data = dr10_data.replace(np.nan, None) # DB doesn't like NaNs
@@ -309,7 +312,7 @@ def run_prospector(ls_id, mags, mag_uncs, prosp_file=default_pfile, redshift=Non
     if nodes!=0:
         cmd.insert(0, f'mpirun -n {nodes}')
     print("Running: ", ' '.join(cmd))
-    subprocess.call(' '.join(cmd), shell=True, env=os.environ)
+    subprocess.check_call(' '.join(cmd), shell=True, env=os.environ) # try check call instead
     
     return outfile +'.h5'
 
