@@ -9,6 +9,7 @@ import h5py, astropy
 import numpy as np
 import pandas as pd
 import time
+import pickle
 # import classify
 # import util
 from dl import queryClient as qc, helpers
@@ -57,10 +58,10 @@ unlensed = {
 }
 
 
-output_dir = '/monocle/exports/' # Uncomment these two lines before pushing to docker
+output_dir = '/monocle/exports/'
 input_dir = '/monocle/'
 # output_dir = './'
-# input_dir = './'
+input_dir = './docker/' # Comment before pushing to docker
 
 gal = iptf16
 
@@ -121,6 +122,7 @@ class MassMet(priors.Prior):
         return [a, b]
 
     @property
+    
     def range(self):
         return ((self.params['mass_mini'], self.params['mass_maxi']),\
 
@@ -308,20 +310,25 @@ def load_obs(spec = False, spec_file = None, maskspec=False, phottable=None,
              luminosity_distance=0, snr=10, args={}, **kwargs):
     filters = load_filters(filternames)
     
-    if 'mag_in' not in args or args.mag_in is None:
+    if 'mag_in' not in args or args['mag_in'] is None:
         raise ValueError("--mag_in must be passed as an argument")
-    if 'mag_unc_in' not in args or args.mag_unc_in is None:
+    if 'mag_unc_in' not in args or args['mag_unc_in'] is None:
         raise ValueError("--mag_unc_in must be passed as an argument")
     
-    M_AB = np.array([float(x) for x in args.mag_in.strip('[]').split(',')])
+    if isinstance(args['mag_in'], str):
+        M_AB = np.array([float(x) for x in args['mag_in'].strip('[]').split(',')])
+        magerr = np.array([float(x) for x in args['mag_unc_in'].strip('[]').split(',')])
+    else:
+        M_AB = np.array(args['mag_in'])
+        magerr = np.array(args['mag_unc_in'])
+    
     maggies = np.array(10**(-.4*M_AB))
-    magerr = np.array([float(x) for x in args.mag_unc_in.strip('[]').split(',')])
     magerr = np.clip(magerr, 0.05, np.inf)
     maggies_unc = magerr * maggies / 1.086
     
     # Redshift
     if 'object_redshift' in args:
-        z = args.object_redshift
+        z = args['object_redshift']
     else: z = None
 
     # Build obs
@@ -362,7 +369,8 @@ def load_gp(**extras):
 # LnP function as global
 # ------------------
 
-def lnprobfn(theta, model=None, obs=None, verbose=run_params['verbose']):
+def lnprobfn(theta, model=None, obs=None, def_sps=None, def_noise_model=None,
+             verbose=run_params['verbose']):
     """Given a parameter vector and optionally a dictionary of observational
     ata and a model object, return the ln of the posterior. This requires that
     an sps object (and if using spectra and gaussian processes, a GP object) be
@@ -389,27 +397,35 @@ def lnprobfn(theta, model=None, obs=None, verbose=run_params['verbose']):
     :returns lnp:
         Ln posterior probability.
     """
-
+    
+    if def_sps is None:
+        def_sps=sps # No idea how this global gets defined
+    if def_noise_model is None:
+        def_spec_noise, def_phot_noise = spec_noise, phot_noise
+    else:
+        def_spec_noise, def_phot_noise = def_noise_model
+    
     lnp_prior = model.prior_product(theta, nested=True)
     if np.isfinite(lnp_prior):
         # Generate mean model
         try:
-            mu, phot, x = model.mean_model(theta, obs, sps=sps)
+            mu, phot, x = model.mean_model(theta, obs, sps=def_sps)
         except(ValueError):
             return -np.infty
 
         # Noise modeling
-        if spec_noise is not None:
-            spec_noise.update(**model.params)
-        if phot_noise is not None:
-            phot_noise.update(**model.params)
+        ### WHERE ARE ALL THESE GLOBALS DEFINED!?!?!
+        if def_spec_noise is not None:
+            def_spec_noise.update(**model.params)
+        if def_phot_noise is not None:
+            def_phot_noise.update(**model.params)
         vectors = {'spec': mu, 'unc': obs['unc'],
                    'sed': model._spec, 'cal': model._speccal,
                    'phot': phot, 'maggies_unc': obs['maggies_unc']}
 
         # Calculate likelihoods
-        lnp_spec = lnlike_spec(mu, obs=obs, spec_noise=spec_noise, **vectors)
-        lnp_phot = lnlike_phot(phot, obs=obs, phot_noise=phot_noise, **vectors)
+        lnp_spec = lnlike_spec(mu, obs=obs, spec_noise=def_spec_noise, **vectors)
+        lnp_phot = lnlike_phot(phot, obs=obs, phot_noise=def_phot_noise, **vectors)
 
         return lnp_phot + lnp_spec + lnp_prior
     else:
@@ -431,11 +447,14 @@ def halt(message):
         pass
     sys.exit(0)
 
-def run(mag_in, mag_unc_in, redshift=None, effective_samples=10000, outfile='monocle'):
-    """
-    Runs prospector with passed photometry and settings
-    """
-    pass
+def load_all(args, **run_params):
+    spec_noise, phot_noise = load_gp(**run_params)
+    obs = load_obs(args=args, **run_params)
+    model = load_model(obs=obs, **run_params)
+    sps = load_sps(**run_params)
+    noise_model = (spec_noise, phot_noise)
+    
+    return obs, model, sps, noise_model
 
 if __name__=='__main__':
     
@@ -444,16 +463,20 @@ if __name__=='__main__':
                         help=("Redshift for the model"))
     parser.add_argument('--mag_in', default=None, type=str)
     parser.add_argument('--mag_unc_in', default=None, type=str)
-    parser.add_argument('--effective_samples', default=10000, type=int)
+    parser.add_argument('--effective_samples', default=100000, type=int)
     
     args = parser.parse_args()
     print(args)
+    # run_params['nested_target_n_effective'] = args.nested_target_n_effective
     
-    spec_noise, phot_noise = load_gp(**run_params)
-    obs = load_obs(args=args, **run_params)
-    model = load_model(obs=obs, **run_params)
-    sps = load_sps(**run_params)
-    noise_model = (spec_noise, phot_noise)
+    # spec_noise, phot_noise = load_gp(**run_params)
+    # obs = load_obs(args=args, **run_params)
+    # model = load_model(obs=obs, **run_params)
+    # sps = load_sps(**run_params)
+    # noise_model = (spec_noise, phot_noise)
+    
+    obs, model, sps, noise_model = load_all(args=vars(args), **run_params)
+    spec_noise, phot_noise = noise_model
     
     initial_theta_grid = np.around(np.arange(model.config_dict["logzsol"]['prior'].range[0], 
                                 model.config_dict["logzsol"]['prior'].range[1], step=0.01), decimals=2)
@@ -539,7 +562,10 @@ if __name__=='__main__':
                                                  **run_params)
         runtime = (time.time()-start)/60.0
 
-    # print(output)
+    # Pickle output (for importance sampling)
+    with open(args.outfile+'.pkl', 'wb') as file:
+        pickle.dump(output, file)
+    
     print(f"Prospector finished in {runtime:.4f} minutes")
     print(f"Run params: {run_params}")
 
