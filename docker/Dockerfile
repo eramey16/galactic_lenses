@@ -13,7 +13,7 @@ RUN \
 
 # Install astroconda
 RUN conda config --add channels http://ssb.stsci.edu/astroconda
-RUN conda install -y python ipython numpy pandas scipy astropy h5py hdf5
+RUN conda install -y python ipython numpy pandas scipy astropy h5py hdf5 ipykernel
 
 RUN conda install -y -c conda-forge emcee dynesty schwimmbad
 
