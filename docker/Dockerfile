@@ -15,9 +15,9 @@ RUN \
 RUN conda config --add channels http://ssb.stsci.edu/astroconda
 RUN conda install -y python ipython numpy pandas scipy astropy h5py hdf5
 
-RUN conda install -y -c conda-forge emcee dynesty=2.1.4 schwimmbad tdqm
+RUN conda install -y -c conda-forge emcee dynesty schwimmbad
 
-RUN python -m pip install astro-sedpy
+RUN python -m pip install astro-sedpy tdqm
 
 WORKDIR /
 ENV SPS_HOME '/fsps'
