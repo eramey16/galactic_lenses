@@ -12,7 +12,7 @@ RUN \
     apt-get clean all
 
 WORKDIR /
-ENV SPS_HOME '/fsps'
+ENV SPS_HOME='/fsps'
 RUN git clone https://github.com/cconroy20/fsps.git
 RUN python -m pip install fsps
 
@@ -29,8 +29,6 @@ RUN \
     make clean                                                              && \
     cd ..                                                                   && \
     rm -rf $mpich_prefix
-
-ENV PYTHONPATH="${PYTHONPATH}:/monocle"
 
 RUN pip install --ignore-installed --no-cache-dir astro-datalab
 RUN conda install -y python ipython numpy pandas scipy astropy h5py hdf5
