@@ -60,8 +60,7 @@ unlensed = {
 
 output_dir = '/monocle/exports/'
 input_dir = '/monocle/'
-# output_dir = './'
-input_dir = './docker/' # Comment before pushing to docker
+# input_dir = '/global/homes/e/eramey16/galactic_lenses/docker/'
 
 gal = iptf16
 
@@ -464,6 +463,8 @@ if __name__=='__main__':
     parser.add_argument('--mag_in', default=None, type=str)
     parser.add_argument('--mag_unc_in', default=None, type=str)
     parser.add_argument('--effective_samples', default=100000, type=int)
+    parser.add_argument('--output_dynesty', action='store_true', 
+                        help='Saves dynesty output file as pickle')
     
     args = parser.parse_args()
     print(args)
@@ -561,18 +562,22 @@ if __name__=='__main__':
                                                  wt_function=weight_function,
                                                  **run_params)
         runtime = (time.time()-start)/60.0
-
-    # Pickle output (for importance sampling)
-    with open(args.outfile+'.pkl', 'wb') as file:
-        pickle.dump(output, file)
+    
     
     print(f"Prospector finished in {runtime:.4f} minutes")
-    print(f"Run params: {run_params}")
+    # print(f"Run params: {run_params}")
 
-    from prospect.io import write_results as writer
-    hfile = args.outfile+'.h5'
-    writer.write_hdf5(hfile, {}, model, obs,
-                     output, None,
-                     sps=sps,
-                     tsample=None,
-                     toptimize=0.0)
+    # Pickle output (for importance sampling)
+    if args.output_dynesty:
+        outfile = args.outfile+'.pkl'
+        with open(outfile, 'wb') as file:
+            pickle.dump(output, file)
+    else:
+        from prospect.io import write_results as writer
+        outfile = args.outfile+'.h5'
+        writer.write_hdf5(outfile, {}, model, obs,
+                         output, None,
+                         sps=sps,
+                         tsample=None,
+                         toptimize=0.0)
+    print(f"\nWrote results to: {outfile}\n")

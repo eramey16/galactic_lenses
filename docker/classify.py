@@ -187,8 +187,8 @@ def get_galaxy(ls_id, tag=None, engine=None):
             time.sleep(sleeptime)
     raise ValueError("Could not connect to the database")
 
-def merge_prospector(dr10_data, h5_file=None, redo=False, nodes=0, **kwargs):
-    """ Collects prospector data on a galaxy and merges it with dr10 data """
+def prepare_prospector(dr10_data, basename=None, redo=False, nodes=0, 
+                       resample_output=False, **kwargs):
     basic_data = dr10_data.iloc[0] # Series of values
     
     # Find 
@@ -209,13 +209,21 @@ def merge_prospector(dr10_data, h5_file=None, redo=False, nodes=0, **kwargs):
     # Data shortcuts
     # red_value = basic_data.z_phot_median
     # Run Prospector
-    if h5_file is None: h5_file = f'{output_dir}{basic_data.ls_id}.h5'
-    if redo or not os.path.exists(h5_file):
-        outfile = h5_file.replace('.h5', '') if '.h5' in h5_file else h5_file
-        h5_file = run_prospector(basic_data.ls_id, mags, mag_uncs, nodes=nodes, 
-                                 redshift=redshift, outfile=outfile, **kwargs)
+    if basename is None: basename = f'{output_dir}{basic_data.ls_id}'
+    if '.h5' in basename: basename = basename.replace('.h5', '')
+    outfile = basename + (".h5" if not resample_output else '.pkl')
     
-    # import pdb; pdb.set_trace()
+    if os.path.exists(outfile) and not redo:
+        print(f"File {outfile} exists, not re-running")
+    else:
+        run_prospector(basic_data.ls_id, mags, mag_uncs, nodes=nodes, resample_output=resample_output,
+                                 redshift=redshift, basename=basename, **kwargs)
+    
+    return outfile
+
+def merge_prospector(dr10_data, basename=None):
+    """ Collects prospector data on a galaxy and merges it with dr10 data """
+    h5_file = basename + '.h5'
     
     # Read prospector file
     h5_data = reader.results_from(h5_file)
@@ -285,16 +293,21 @@ def update_db(bkdata, gal_data, engine=None):
             time.sleep(sleeptime)
     raise ValueError("Could not connect to the database")
     
+def resample_prospector(pkl_file, resample_file):
+    if not isinstance(resample_file, str):
+        raise ValueError("Resample file must be a string with ls_ids to resample")
+    pass
 
 def run_prospector(ls_id, mags, mag_uncs, prosp_file=default_pfile, redshift=None, 
-                   nodes=0, outfile=None, effective_samples=1000, **kwargs):
+                   nodes=0, basename=None, effective_samples=1000, resample_output=False,
+                   **kwargs):
     """ Runs prospector with provided parameters """
     # Input and output filenames
     if prosp_file is None: prosp_file = default_pfile
-    if outfile is None:
-        outfile = os.path.join(output_dir, str(ls_id))
-    if output_dir not in outfile:
-        outfile = os.path.join(output_dir, outfile)
+    if basename is None:
+        basename = os.path.join(output_dir, str(ls_id))
+    if output_dir not in basename:
+        basename = os.path.join(output_dir, basename)
     
     # Run prospector with parameters
     # mags = ', '.join([str(x) for x in mags])
@@ -302,16 +315,20 @@ def run_prospector(ls_id, mags, mag_uncs, prosp_file=default_pfile, redshift=Non
     
     cmd = ['python', prosp_file, f'--effective_samples={effective_samples}',
            f'--mag_in="{mags}"', f'--mag_unc_in="{mag_uncs}"',
-           f'--outfile={outfile}']
+           f'--outfile={basename}']
     
     if redshift is not None:
         cmd.insert(2, f'--object_redshift={redshift}')
+    if resample_output:
+        cmd.insert(2, f'--output_dynesty')
     if nodes!=0:
         cmd.insert(0, f'mpirun -n {nodes}')
     print("Running: ", ' '.join(cmd))
     subprocess.call(' '.join(cmd), shell=True, env=os.environ)
     
-    return outfile +'.h5'
+    outfile = basename + ('.h5' if not resample_output else '.pkl')
+    if not os.path.exists(outfile):
+        raise ValueError("Prospector run failed.")
 
 def predict(gal_data, model_file=None, thresh=0.05):
     if model_file is None:
@@ -326,23 +343,40 @@ def predict(gal_data, model_file=None, thresh=0.05):
     
     return pred
 
-def run(ls_id=None, ra=None, dec=None, radius=None, nodes=0, 
-        predict=False, nodb=False, save=None, **kwargs):
+def run(ls_id=None, ra=None, dec=None, radius=None, nodes=0, predict=False, 
+        nodb=False, save=None, basename=None, resample_output=False, **kwargs):
     
     start = time.time()
     if ls_id is not None:
         bkdata, tbldata = get_galaxy(ls_id, engine=engine)
     elif ra is not None and dec is not None:
+        raise NotImplementedError("Emily needs to implement this!")
         query_galaxy(ra, dec, save=save) # TODO: fix this
     else:
         raise ValueError("User must provide either a valid LSID or values for RA and DEC.")
     
     # Output file names
-    h5_file = os.path.join(output_dir, f'{ls_id}.h5')
-    # basic_file = os.path.join(output_dir, f'{ls_id}.csv')
+    if basename is not None:
+        basename = os.path.join(output_dir, basename)
+    else:
+        basename = os.path.join(output_dir, str(ls_id))
+    
+    # Set settings for resampling, if chosen
+    if resample_output:
+        predict = False
+        nodb = True
+        kwargs['inflate_err'] = 5
+        kwargs['effective_samples'] = 500000
     
     # Run/read prospector file and get full dataframe
-    gal_data = merge_prospector(tbldata, nodes=nodes, **kwargs)
+    outfile = prepare_prospector(tbldata, nodes=nodes, basename=basename, 
+                       resample_output=resample_output, **kwargs)
+    if resample_output:
+        resample_prospector(pkl_file=outfile, resample_file=resample_output)
+        print("Write more here")
+        return
+    else:
+        gal_data = merge_prospector(tbldata, basename=basename)
     
     # Test on RF model
     if predict:
@@ -367,6 +401,9 @@ if __name__ == "__main__":
     parser.add_argument("-rd", "--radius",type=float, default=0.0002777777778, help = "Radius for q3c radial query")
     parser.add_argument('-n', '--nodes', type=int, default=0,
                         help='Number of nodes for MPI run (0 means no MPI)')
+    parser.add_argument('--resample_output', type=str, default=None,
+                        help='Provide a file name with LS IDs of galaxies to resample from original. \
+                        Also applies --inflate_err=5, --effective_samples=500000, --nodb=True')
     parser.add_argument('-e', '--effective_samples', type=int, default=1000, 
                         help='Same as --nested_target_n_effective in Prospector run')
     parser.add_argument('--inflate_err', type=int, default=1, 
@@ -377,6 +414,7 @@ if __name__ == "__main__":
     parser.add_argument('-p', '--predict', action='store_true')
     parser.add_argument('--nodb', action='store_true')
     parser.add_argument("-s","--save",type=str,default=None, help="Database table to use")
+    parser.add_argument("--basename", type=str, default=None, help="Output filename (no .h5)")
     
     # Start sqlalchemy engine
     engine = sa.create_engine(util.conn_string, poolclass=NullPool)
