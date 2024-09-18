@@ -30,12 +30,15 @@ RUN \
     cd ..                                                                   && \
     rm -rf $mpich_prefix
 
+ENV PYTHONPATH="${PYTHONPATH}:/monocle"
+
+RUN pip install --ignore-installed --no-cache-dir astro-datalab
 RUN conda install -y python ipython numpy pandas scipy astropy h5py hdf5
 RUN conda install -y ipykernel sqlalchemy psycopg2 requests scikit-learn
 RUN conda install -y -c conda-forge emcee dynesty schwimmbad mpi4py six curl
 RUN conda install -y -c astropy astroquery corner
 
-RUN python -m pip install astro-sedpy tdqm astro-prospector noaodatalab
+RUN python -m pip install astro-sedpy tdqm astro-prospector
 
 # ADD classify.py /monocle/classify.py
 # ADD gallazzi_05_massmet.txt /monocle/gallazzi_05_massmet.txt
@@ -43,9 +46,6 @@ RUN python -m pip install astro-sedpy tdqm astro-prospector noaodatalab
 # ADD param_monocle.py /monocle/param_monocle.py
 # ADD util.py /monocle/util.py
 # ADD __init__.py /monocle/__init__.py
-
-# ENV PATH="${PATH}:/mycode"
-ENV PYTHONPATH="${PYTHONPATH}:/monocle"
 
 WORKDIR /monocle
 WORKDIR exports
