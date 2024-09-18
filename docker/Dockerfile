@@ -11,14 +11,6 @@ RUN \
         build-essential gfortran nano vim wget && \
     apt-get clean all
 
-# Install astroconda
-RUN conda config --add channels http://ssb.stsci.edu/astroconda
-RUN conda install -y python ipython numpy pandas scipy astropy h5py hdf5 ipykernel
-
-RUN conda install -y -c conda-forge emcee dynesty schwimmbad
-
-RUN python -m pip install astro-sedpy tdqm
-
 WORKDIR /
 ENV SPS_HOME '/fsps'
 RUN git clone https://github.com/cconroy20/fsps.git
@@ -38,12 +30,12 @@ RUN \
     cd ..                                                                   && \
     rm -rf $mpich_prefix
 
-RUN conda install -c conda-forge mpi4py six curl schwimmbad
-
-RUN python -m pip install astro-prospector noaodatalab
-
+RUN conda install -y python ipython numpy pandas scipy astropy h5py hdf5
+RUN conda install -y ipykernel sqlalchemy psycopg2 requests scikit-learn
+RUN conda install -y -c conda-forge emcee dynesty schwimmbad mpi4py six curl
 RUN conda install -y -c astropy astroquery corner
-RUN conda install -y sqlalchemy psycopg2 requests scikit-learn
+
+RUN python -m pip install astro-sedpy tdqm astro-prospector noaodatalab
 
 ADD classify.py /monocle/classify.py
 ADD gallazzi_05_massmet.txt /monocle/gallazzi_05_massmet.txt
