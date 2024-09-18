@@ -37,7 +37,7 @@ RUN conda install -y -c conda-forge emcee dynesty schwimmbad mpi4py six curl
 RUN conda install -y -c astropy astroquery corner
 
 RUN python -m pip install astro-sedpy tdqm astro-prospector httplib2 pycurl-requests pyvo specutils
-# RUN pip install --upgrade noaodatalab
+RUN pip install astro-datalab
 
 # ADD classify.py /monocle/classify.py
 # ADD gallazzi_05_massmet.txt /monocle/gallazzi_05_massmet.txt
