@@ -31,13 +31,18 @@ RUN \
     rm -rf $mpich_prefix
 
 # RUN pip install --ignore-installed --no-cache-dir astro-datalab
-RUN conda install -y python ipython numpy pandas scipy astropy h5py hdf5
+RUN conda install -y python=3.11 ipython numpy pandas scipy astropy h5py hdf5
 RUN conda install -y ipykernel sqlalchemy psycopg2 requests scikit-learn
 RUN conda install -y -c conda-forge emcee dynesty schwimmbad mpi4py six curl
 RUN conda install -y -c astropy astroquery corner
 
-RUN python -m pip install astro-sedpy tdqm astro-prospector httplib2 pycurl-requests pyvo specutils
-RUN pip install astro-datalab
+RUN python -m pip install astro-sedpy tdqm astro-prospector httplib2 pycurl-requests pyvo specutils mkl
+RUN git clone https://github.com/astro-datalab/datalab.git && \
+    cd datalab && \
+    pip install . && \
+    cd .. && \
+    rm -rf datalab
+
 
 # ADD classify.py /monocle/classify.py
 # ADD gallazzi_05_massmet.txt /monocle/gallazzi_05_massmet.txt
