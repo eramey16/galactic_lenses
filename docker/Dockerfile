@@ -8,7 +8,7 @@ SHELL ["/bin/bash", "-c"]
 RUN \
     apt-get update        && \
     apt-get install --yes    \
-        build-essential gfortran nano vim wget && \
+        build-essential gfortran nano vim wget postgresql-client && \
     apt-get clean all
 
 WORKDIR /
@@ -31,6 +31,7 @@ RUN \
     rm -rf $mpich_prefix
 
 # RUN pip install --ignore-installed --no-cache-dir astro-datalab
+RUN conda install --solver=classic conda-forge::conda-libmamba-solver conda-forge::libmamba conda-forge::libmambapy conda-forge::libarchive
 RUN conda install -y python=3.11 ipython numpy pandas scipy astropy h5py hdf5
 RUN conda install -y ipykernel sqlalchemy psycopg2 requests scikit-learn
 RUN conda install -y -c conda-forge emcee dynesty schwimmbad mpi4py six curl
