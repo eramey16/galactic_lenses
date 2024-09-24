@@ -8,13 +8,8 @@ SHELL ["/bin/bash", "-c"]
 RUN \
     apt-get update        && \
     apt-get install --yes    \
-        build-essential gfortran nano vim wget postgresql-client && \
+        less build-essential gfortran nano vim wget postgresql-client && \
     apt-get clean all
-
-WORKDIR /
-ENV SPS_HOME='/fsps'
-RUN git clone https://github.com/cconroy20/fsps.git
-RUN python -m pip install fsps
 
 ENV mpich=4.0.2
 ENV mpich_prefix=mpich-$mpich
@@ -37,7 +32,12 @@ RUN conda install -y ipykernel sqlalchemy psycopg2 requests scikit-learn
 RUN conda install -y -c conda-forge emcee dynesty schwimmbad mpi4py six curl
 RUN conda install -y -c astropy astroquery corner
 
-RUN python -m pip install astro-sedpy tdqm astro-prospector httplib2 pycurl-requests pyvo specutils mkl
+WORKDIR /
+RUN git clone https://github.com/cconroy20/fsps.git /fsps
+ENV SPS_HOME='/fsps'
+
+RUN python -m pip install astro-sedpy tdqm astro-prospector httplib2 pycurl-requests pyvo specutils mkl fsps
+
 RUN git clone https://github.com/astro-datalab/datalab.git && \
     cd datalab && \
     pip install . && \
@@ -51,7 +51,7 @@ RUN git clone https://github.com/astro-datalab/datalab.git && \
 # ADD param_monocle.py /monocle/param_monocle.py
 # ADD util.py /monocle/util.py
 # ADD __init__.py /monocle/__init__.py
-
+# ENV PGPASSFILE="/credentials/pgpass.conf"
 WORKDIR /monocle
 WORKDIR exports
 
