@@ -1,3 +1,4 @@
+# TODO: make it so you can give an lsid and have it search database
 #import statements
 from dl import queryClient as qc, helpers
 from dl import authClient as ac
@@ -28,8 +29,11 @@ import util
 import pickle
 import pandas as pd
 import numpy as np
+import dynesty
 
 import prospect.io.read_results as reader
+from prospect.io import write_results as writer
+import param_monocle as param
 
 bands = ['g', 'r', 'i', 'z', 'w1', 'w2']
 colors = ['g_r', 'i_z', 'r_i', 'r_z', 'w1_w2', 'z_w1']
@@ -94,7 +98,7 @@ def send_query(where, cols=util.trac_cols, tbl='ls_dr10.tractor AS trac', extras
     data = _sub_query(query)
     return data
 
-def query_galaxy(ra,dec,radius=one_as,cols=all_cols,trac_table="ls_dr10.tractor",
+def query_galaxy(ra=None,dec=None,ls_id=None,radius=one_as,cols=all_cols,trac_table="ls_dr10.tractor",
                  phot_table="ls_dr10.photo_z", data_type=None,limit=1,
                  engine=None, save=None):
     """Queries the NOAO Legacy Survey Data Release 10 Tractor and Photo-Z tables
@@ -116,12 +120,27 @@ def query_galaxy(ra,dec,radius=one_as,cols=all_cols,trac_table="ls_dr10.tractor"
         ConnectionError: If NOAO times out. You can usually re-run the function and
             it'll work.
     """
-    # Set up basic query
-    query =[f"""SELECT {','.join(cols)} FROM {trac_table} AS trac """
-    f"""INNER JOIN {phot_table} as phot_z ON trac.ls_id=phot_z.ls_id """,
-    f"""WHERE (q3c_radial_query(ra,dec,{ra},{dec},{radius})) """,
-    f"""ORDER BY q3c_dist({ra}, {dec}, trac.ra, trac.dec) ASC """,
-    f"""LIMIT {limit}"""]
+    
+    # Assemble query
+    query_base = [f"""SELECT {','.join(cols)} FROM {trac_table} AS trac """,
+                  f"""INNER JOIN {phot_table} as phot_z ON trac.ls_id=phot_z.ls_id """]
+    if ls_id is not None:
+        if ls_id[0]=='9':
+            raise ValueError("Emily fix this, it's a dr9 ls_id")
+        query = query_base + [f"""WHERE trac.ls_id={ls_id}"""]
+    elif ra is not None and dec is not None:
+        query = query_base + [f"""WHERE (q3c_radial_query(ra,dec,{ra},{dec},{radius})) """,
+                              f"""ORDER BY q3c_dist({ra}, {dec}, trac.ra, trac.dec) ASC """]
+    else:
+        raise ValueError("Must run query_galaxy with either ra and dec or ls_id")
+    query += [f"""LIMIT {limit}"""]
+    
+    # # Set up basic query
+    # query =[f"""SELECT {','.join(cols)} FROM {trac_table} AS trac """,
+    # f"""INNER JOIN {phot_table} as phot_z ON trac.ls_id=phot_z.ls_id """,
+    # f"""WHERE (q3c_radial_query(ra,dec,{ra},{dec},{radius})) """,
+    # f"""ORDER BY q3c_dist({ra}, {dec}, trac.ra, trac.dec) ASC """,
+    # f"""LIMIT {limit}"""]
     # Add data type, if specified
     if data_type is not None:
         query.insert(1,f""" AND (type = '{data_type}') """)
@@ -130,13 +149,14 @@ def query_galaxy(ra,dec,radius=one_as,cols=all_cols,trac_table="ls_dr10.tractor"
     
     trac_data = _sub_query(query)
     if trac_data.empty:
+        if 
         raise ValueError(f"No objects within {radius/one_as:.2f} arcsec of {ra},{dec}")
     
     # Save to DB
     if save is not None:
         if engine is None:
             engine = sa.create_engine(util.conn_string, poolclass=NullPool)
-        
+        ### TODO: FIX THIS, what is going on here?
     
     return trac_data
     
@@ -160,26 +180,26 @@ def get_galaxy(ls_id, tag=None, engine=None):
             conn = engine.connect()
             # Put in a try catch loop, sleep for a random time and try again if it doesn't work
             stmt = text(f"SELECT * FROM bookkeeping WHERE ls_id={ls_id}")
-            bkdata = pd.DataFrame(conn.execute(stmt))
+            bk_data = pd.DataFrame(conn.execute(stmt))
 
-            if bkdata.empty:
+            if bk_data.empty:
                 raise ValueError(f"No galaxy with LSID {ls_id} is present in the bookkeeping table")
-            elif len(bkdata)>1:
-                bkdata = bkdata[bkdata.tag==tag]
-                if len(bkdata)!=1:
+            elif len(bk_data)>1:
+                bk_data = bk_data[bk_data.tag==tag]
+                if len(bk_data)!=1:
                     raise ValueError(f"Too many entries for LSID {ls_id}. Enter a tag.")
 
-            gal_meta = bkdata.iloc[0]
+            gal_meta = bk_data.iloc[0]
 
             # if gal_meta['stage'] != 1:
             #     raise ValueError(f"Stage is wrong for galaxy {ls_id}. Current stage: {gal_meta['stage']}")
             stmt = text(f"SELECT * FROM {gal_meta['tbl_name']} WHERE id={gal_meta['tbl_id']}")
-            tbldata = pd.DataFrame(
+            tbl_data = pd.DataFrame(
                 conn.execute(stmt))
 
             conn.close()
 
-            return bkdata, tbldata[util.query_cols]
+            return bk_data, tbl_data[util.query_cols]
             
         except OperationalError as e: # If too many connections, sleep and try again
             sleeptime = 5 + 5*np.random.rand() # Sleep 5-10 seconds
@@ -187,19 +207,23 @@ def get_galaxy(ls_id, tag=None, engine=None):
             time.sleep(sleeptime)
     raise ValueError("Could not connect to the database")
 
-def prepare_prospector(dr10_data, basename=None, redo=False, nodes=0, 
+def calc_mag(basic_data, inflate_err=False):
+    # magnitudes, uncertainties, and fluxes
+    mags = [basic_data['dered_mag_'+b] for b in bands]
+    mag_uncs = list(2.5 / np.log(10) / np.array([basic_data['snr_'+b] for b in bands]))
+    if inflate_err>1:
+        mag_uncs = [x*inflate_err for x in mag_uncs]
+    # fluxes = [basic_data['dered_flux_'+b] for b in bands]
+    return mags, mag_uncs
+
+def prepare_prospector(tbl_data, basename=None, redo=False, nodes=0, 
                        resample_output=False, **kwargs):
-    basic_data = dr10_data.iloc[0] # Series of values
+    basic_data = tbl_data.iloc[0] # Series of values
     
     # Find 
     print(f'Object found: {basic_data.ls_id}')
     
-    # magnitudes, uncertainties, and fluxes
-    mags = [basic_data['dered_mag_'+b] for b in bands]
-    mag_uncs = list(2.5 / np.log(10) / np.array([basic_data['snr_'+b] for b in bands]))
-    if kwargs['inflate_err']>1:
-        mag_uncs = [x*kwargs['inflate_err'] for x in mag_uncs]
-    # fluxes = [basic_data['dered_flux_'+b] for b in bands]
+    mags, mag_uncs = calc_mag(basic_data, kwargs['inflate_err'])
     
     # Print
     print(f'Redshift: {basic_data.z_phot_median}')
@@ -211,6 +235,7 @@ def prepare_prospector(dr10_data, basename=None, redo=False, nodes=0,
     # Run Prospector
     if basename is None: basename = f'{output_dir}{basic_data.ls_id}'
     if '.h5' in basename: basename = basename.replace('.h5', '')
+    # Save pkl file if resampling
     outfile = basename + (".h5" if not resample_output else '.pkl')
     
     if os.path.exists(outfile) and not redo:
@@ -221,27 +246,27 @@ def prepare_prospector(dr10_data, basename=None, redo=False, nodes=0,
     
     return outfile
 
-def merge_prospector(dr10_data, basename=None):
+def merge_prospector(tbl_data, basename=None):
     """ Collects prospector data on a galaxy and merges it with dr10 data """
     h5_file = basename + '.h5'
     
     # Read prospector file
     h5_data = reader.results_from(h5_file)
-    prosp_data = util.load_data(h5_data)
+    prosp_data = util.load_data(h5_data) # TODO: update this process
     
-    dr10_data.loc[0, util.h5_cols[1:]] = prosp_data
-    dr10_data = dr10_data.replace(np.nan, None) # DB doesn't like NaNs
+    tbl_data.loc[0, util.h5_cols[1:]] = prosp_data
+    tbl_data = tbl_data.replace(np.nan, None) # DB doesn't like NaNs
     
-    return dr10_data
+    return tbl_data
 
-def update_db(bkdata, gal_data, engine=None):
+def update_db(bk_data, gal_data, engine=None):
     """ Updates the database using the bookkeeping and galaxy data provided """
     # Make a database connection
     if engine is None:
         engine = sa.create_engine(util.conn_string, poolclass=NullPool)
     
     bktbl = sa.Table('bookkeeping', sa.MetaData(), autoload_with=engine)
-    tbl = sa.Table(bkdata.tbl_name[0], sa.MetaData(), autoload_with=engine)
+    tbl = sa.Table(bk_data.tbl_name[0], sa.MetaData(), autoload_with=engine)
     
     # Sleep first
     sleeptime = 5 + 15*np.random.rand()
@@ -253,7 +278,7 @@ def update_db(bkdata, gal_data, engine=None):
         try:
             conn = engine.connect()
 
-            bkdata = bkdata.iloc[0]
+            bk_data = bk_data.iloc[0]
             gal_data = gal_data.iloc[0]
 
             # Update galaxy table
@@ -263,13 +288,13 @@ def update_db(bkdata, gal_data, engine=None):
             # Assemble psql statement
             # import pdb; pdb.set_trace()
             stmt = sa.update(tbl).where(
-                tbl.c.id==bkdata.tbl_id).values(**update_data)
-            # stmt = f"UPDATE {bkdata.tbl_name} SET "
+                tbl.c.id==bk_data.tbl_id).values(**update_data)
+            # stmt = f"UPDATE {bk_data.tbl_name} SET "
             # if 'type' in update_data: # string needs to be in quotes
             #     update_data['type'] = f"'{update_data['type']}'"
             # stmt += ', '.join([f"{col} = {update_data[col]}" 
             #                    for col in db_cols])
-            # stmt += f" WHERE id = {bkdata.tbl_id}"
+            # stmt += f" WHERE id = {bk_data.tbl_id}"
             
             # if 'inf' in stmt:
             #     stmt = stmt.replace('inf', "'infinity'")
@@ -279,7 +304,7 @@ def update_db(bkdata, gal_data, engine=None):
             conn.execute(stmt)
 
             # Update bookkeeping table
-            stmt = f"UPDATE bookkeeping SET stage = 2 WHERE id = {str(bkdata.id)}"
+            stmt = f"UPDATE bookkeeping SET stage = 2 WHERE id = {str(bk_data.id)}"
             conn.execute(text(stmt))
             
             conn.commit()
@@ -293,10 +318,72 @@ def update_db(bkdata, gal_data, engine=None):
             time.sleep(sleeptime)
     raise ValueError("Could not connect to the database")
     
-def resample_prospector(pkl_file, resample_file):
+def resample_prospector(pkl_file, resample_file, tbl_data, inflate_err=5, engine=None):
+    print(f"Resampling file {pkl_file}")
     if not isinstance(resample_file, str):
         raise ValueError("Resample file must be a string with ls_ids to resample")
-    pass
+    if engine is None:
+        engine = sa.create_engine(util.conn_string, poolclass=NullPool)
+    
+    # Open pickle file
+    with open(pkl_file, 'rb') as file:
+        dres = pickle.load(file)
+        N = dres['samples'].shape[0]
+    
+    # Get mags and mag_uncs
+    basic_data = tbl_data.iloc[0]
+    # First run has inflated error bars # TODO: don't hardcode
+    mags1, mag_uncs1 = calc_mag(basic_data, inflate_err=inflate_err)
+    
+    # Set up original model
+    run_params = param.run_params
+    args1 = {
+        "mag_in": mags1,
+        "mag_unc_in": mag_uncs1,
+        "object_redshift": None, # TODO
+    }
+    obs1, model1, sps1, noise_model1 = param.load_all(args=args1, **run_params)
+    spec_noise1, phot_noise1 = noise_model1
+    
+    def loglikelihood1(theta_vec):
+        return param.lnprobfn(theta_vec, model=model1, obs=obs1, def_sps=sps1,
+                              def_noise_model=noise_model1)
+    
+    # Read resampled galaxies
+    resamp_gals = pd.read_csv(resample_file) # should be file with ls_id col
+    # Loop through resampled galaxies
+    for ls_id in resamp_gals['ls_id']:
+        # Get database info
+        bk_data2, tbl_data2 = get_galaxy(ls_id, engine=engine)
+        mags2, mag_uncs2 = calc_mag(tbl_data2.iloc[0])
+        
+        # Set up new model
+        args2 = {
+            "mag_in": mags2,
+            "mag_unc_in": mag_uncs2,
+            "object_redshift": None, # TODO
+        }
+        print(f"Resampling with specs: {args2}")
+        obs2, model2, sps2, noise_model2 = param.load_all(args=args2, **run_params)
+        spec_noise2, phot_noise2 = noise_model2
+        
+        # Define log likelihood
+        def loglikelihood2(theta_vec):
+            return param.lnprobfn(theta_vec, model=model2, obs=obs2, def_sps=sps2, 
+                                  def_noise_model=noise_model2)
+        
+        # Resample prospector output
+        logl2 = [loglikelihood2(dres['samples'][i]) for i in range(N)]
+        # TODO: Try with JAX on a GPU
+        # Reweight samples
+        dres_rwt = dynesty.utils.reweight_run(dres, logp_new=logl2)
+        
+        outfile = output_dir+f"{ls_id}_rwt.h5"
+        writer.write_hdf5(outfile, {}, model2, obs2, dres_rwt, 
+                          None, sps=sps2, tsample=None, toptimize=0.0)
+        print(f"Wrote file: {outfile}")
+    
+    print("Remove pickle file here.")
 
 def run_prospector(ls_id, mags, mag_uncs, prosp_file=default_pfile, redshift=None, 
                    nodes=0, basename=None, effective_samples=1000, resample_output=False,
@@ -346,9 +433,12 @@ def predict(gal_data, model_file=None, thresh=0.05):
 def run(ls_id=None, ra=None, dec=None, radius=None, nodes=0, predict=False, 
         nodb=False, save=None, basename=None, resample_output=False, **kwargs):
     
+    # Start sqlalchemy engine
+    engine = sa.create_engine(util.conn_string, poolclass=NullPool)
+    
     start = time.time()
     if ls_id is not None:
-        bkdata, tbldata = get_galaxy(ls_id, engine=engine)
+        bk_data, tbl_data = get_galaxy(ls_id, engine=engine)
     elif ra is not None and dec is not None:
         raise NotImplementedError("Emily needs to implement this!")
         query_galaxy(ra, dec, save=save) # TODO: fix this
@@ -369,14 +459,15 @@ def run(ls_id=None, ra=None, dec=None, radius=None, nodes=0, predict=False,
         kwargs['effective_samples'] = 500000
     
     # Run/read prospector file and get full dataframe
-    outfile = prepare_prospector(tbldata, nodes=nodes, basename=basename, 
+    outfile = prepare_prospector(tbl_data, nodes=nodes, basename=basename, 
                        resample_output=resample_output, **kwargs)
     if resample_output:
-        resample_prospector(pkl_file=outfile, resample_file=resample_output)
-        print("Write more here")
+        print(f"Resampling with galaxies from {resample_output}")
+        resample_prospector(pkl_file=outfile, resample_file=resample_output, 
+                            tbl_data=tbl_data, engine=engine)
         return
     else:
-        gal_data = merge_prospector(tbldata, basename=basename)
+        gal_data = merge_prospector(tbl_data, basename=basename)
     
     # Test on RF model
     if predict:
@@ -385,7 +476,7 @@ def run(ls_id=None, ra=None, dec=None, radius=None, nodes=0, predict=False,
     
     # Write output to database
     if not nodb:
-        update_db(bkdata, gal_data, engine=engine)
+        update_db(bk_data, gal_data, engine=engine)
     
     engine.dispose()
     print(f"\nFinished {gal_data['ls_id'][0]} in {(time.time()-start)/60} min\n")
@@ -404,7 +495,7 @@ if __name__ == "__main__":
     parser.add_argument('--resample_output', type=str, default=None,
                         help='Provide a file name with LS IDs of galaxies to resample from original. \
                         Also applies --inflate_err=5, --effective_samples=500000, --nodb=True')
-    parser.add_argument('-e', '--effective_samples', type=int, default=1000, 
+    parser.add_argument('-e', '--effective_samples', type=int, default=100000, 
                         help='Same as --nested_target_n_effective in Prospector run')
     parser.add_argument('--inflate_err', type=int, default=1, 
                         help="Factor to inflate errors for prospector run")
@@ -415,9 +506,6 @@ if __name__ == "__main__":
     parser.add_argument('--nodb', action='store_true')
     parser.add_argument("-s","--save",type=str,default=None, help="Database table to use")
     parser.add_argument("--basename", type=str, default=None, help="Output filename (no .h5)")
-    
-    # Start sqlalchemy engine
-    engine = sa.create_engine(util.conn_string, poolclass=NullPool)
     
     # Parse arguments
     args = parser.parse_args()

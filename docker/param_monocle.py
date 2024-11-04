@@ -10,7 +10,6 @@ import numpy as np
 import pandas as pd
 import time
 import pickle
-# import classify
 # import util
 from dl import queryClient as qc, helpers
 from dl.helpers.utils import convert
@@ -33,6 +32,11 @@ from scipy.stats import truncnorm
 
 from astropy.cosmology import WMAP9
 from dynesty.dynamicsampler import stopping_function, weight_function, _kld_error
+
+### TODO next:
+# - Check on load_obs and see if you can eliminate the need to pass args
+# - Check where else args may be needed / used
+# - What exactly is in args anyway?
 
 # Get galaxy data
 bands = ['g', 'r', 'i', 'z', 'w1', 'w2']
@@ -250,7 +254,8 @@ def load_model(add_duste=False, opt_spec=False, smooth_spec = False,
             model_params['nebemlineinspec']['init'] = True
             model_params['gas_logu'] = {'N':1, 'init': -2, 'isfree':True,
                                         'prior': priors.TopHat(mini=-4, maxi=-1), 'units': 'Q_H/N_H'}
-            model_params['gas_logz'] = {'N':1, 'init': 0.0, 'units': 'log Z/Z_\\odot', 'depends_on': gas_logz,
+            model_params['gas_logz'] = {'N':1, 'init': 0.0, 'units': 'log Z/Z_\\odot', 
+                                        'depends_on': gas_logz,
                                         'isfree':True, 'prior': priors.TopHat(mini=-2.0, maxi=0.5)}
         
             model_params['gas_logu']['isfree'] = True
@@ -305,33 +310,34 @@ def load_model(add_duste=False, opt_spec=False, smooth_spec = False,
     
     return model
 
-def load_obs(spec = False, spec_file = None, maskspec=False, phottable=None,
-             luminosity_distance=0, snr=10, args={}, **kwargs):
+def load_obs(mag_in, mag_unc_in, object_redshift=None, spec = False, 
+             spec_file = None, maskspec=False, phottable=None,
+             luminosity_distance=0, snr=10, **kwargs):
     filters = load_filters(filternames)
     
-    if 'mag_in' not in args or args['mag_in'] is None:
-        raise ValueError("--mag_in must be passed as an argument")
-    if 'mag_unc_in' not in args or args['mag_unc_in'] is None:
-        raise ValueError("--mag_unc_in must be passed as an argument")
+    # if 'mag_in' not in args or args['mag_in'] is None:
+    #     raise ValueError("--mag_in must be passed as an argument")
+    # if 'mag_unc_in' not in args or args['mag_unc_in'] is None:
+    #     raise ValueError("--mag_unc_in must be passed as an argument")
     
-    if isinstance(args['mag_in'], str):
-        M_AB = np.array([float(x) for x in args['mag_in'].strip('[]').split(',')])
-        magerr = np.array([float(x) for x in args['mag_unc_in'].strip('[]').split(',')])
+    if isinstance(mag_in, str):
+        M_AB = np.array([float(x) for x in mag_in.strip('[]').split(',')])
+        magerr = np.array([float(x) for x in mag_unc_in.strip('[]').split(',')])
     else:
-        M_AB = np.array(args['mag_in'])
-        magerr = np.array(args['mag_unc_in'])
+        M_AB = np.array(mag_in)
+        magerr = np.array(mag_unc_in)
     
     maggies = np.array(10**(-.4*M_AB))
     magerr = np.clip(magerr, 0.05, np.inf)
     maggies_unc = magerr * maggies / 1.086
     
-    # Redshift
-    if 'object_redshift' in args:
-        z = args['object_redshift']
-    else: z = None
+    # # Redshift
+    # if object_redshift is not None:
+    #     z = object_redshift
+    # else: z = None
 
     # Build obs
-    obs = dict(wavelength=None, spectrum=None, unc=None, redshift=z,
+    obs = dict(wavelength=None, spectrum=None, unc=None, redshift=object_redshift,
                maggies=maggies, maggies_unc=maggies_unc, filters=filters)
     obs["phot_wave"] = [f.wave_effective for f in obs["filters"]]
     obs['phot_mask'] = np.isfinite(np.squeeze(maggies))
@@ -446,14 +452,81 @@ def halt(message):
         pass
     sys.exit(0)
 
-def load_all(args, **run_params):
+def load_all(mag_in, mag_unc_in, object_redshift=None, **run_params):
     spec_noise, phot_noise = load_gp(**run_params)
-    obs = load_obs(args=args, **run_params)
+    obs = load_obs(mag_in, mag_unc_in, object_redshift=object_redshift, **run_params)
     model = load_model(obs=obs, **run_params)
     sps = load_sps(**run_params)
     noise_model = (spec_noise, phot_noise)
     
     return obs, model, sps, noise_model
+
+# def run(mag_in, mag_unc_in, effective_samples, outfile, object_redshift=None, 
+#         withmpi=False, run_params=run_params, output_dynesty=False, **kwargs):
+#     print("\n\nRunning a task with mpi\n\n")
+#     ### Get initial model, obs, sps, and noise
+#     obs, model, sps, noise_model = load_all(mag_in, mag_unc_in, 
+#                                             object_redshift=object_redshift,
+#                                             **run_params)
+#     spec_noise, phot_noise = noise_model
+    
+#     ### Get initial theta grid
+#     initial_theta_grid = np.around(np.arange(model.config_dict["logzsol"]['prior'].range[0], 
+#                                 model.config_dict["logzsol"]['prior'].range[1], step=0.01), decimals=2)
+#     for theta_init in initial_theta_grid:
+#         sps.ssp.params["sfh"] = model.params['sfh'][0]
+#         sps.ssp.params["imf_type"] = model.params['imf_type'][0]
+#         sps.ssp.params["logzsol"] = theta_init
+#         sps.ssp._compute_csp()
+    
+#     ### Set stopping criterion
+#     run_params['nested_stop_kwargs'] = {"target_n_effective": effective_samples}
+    
+#     ### Define prob and prior functions
+#     def new_lnfn(x):
+#         return lnprobfn(x, model=model, obs=obs, def_sps=sps, def_noise_model=noise_model)
+#     def new_prior(u):
+#         return prior_transform(u, model=model)
+    
+#     ### Run prospector
+#     if withmpi: # Run with MPI
+#         run_params['using_mpi'] = True
+#         with MPIPool() as pool:
+#             if not pool.is_master():
+#                 pool.wait()
+#                 sys.exit(0)
+        
+#             nprocs = pool.size
+#             # The parent process will oversee the fitting
+#             run_params.update(dict(nlive_init=400, nested_method="rwalk", nested_dlogz_init=0.05))
+#             output = fitting.run_dynesty_sampler(new_lnfn, new_prior, model.ndim,
+#                                                  pool=pool, queue_size=nprocs, 
+#                                                  stop_function=stopping_function,
+#                                                  wt_function=weight_function,
+#                                                  **run_params)
+#     else: # Run prospector without MPI
+#         run_params.update(dict(nlive_init=400, nested_method="rwalk", nested_dlogz_init=0.05))
+#         output = fitting.run_dynesty_sampler(new_lnfn, new_prior, model.ndim, 
+#                                                  stop_function=stopping_function,
+#                                                  wt_function=weight_function,
+#                                                  **run_params)
+#         runtime = (time.time()-start)/60.0
+        
+    
+#     ### Pickle output (for importance sampling)
+#     if output_dynesty:
+#         outfile = outfile+'.pkl'
+#         with open(outfile, 'wb') as file:
+#             pickle.dump(output, file)
+#     else:
+#         from prospect.io import write_results as writer
+#         outfile = outfile+'.h5'
+#         writer.write_hdf5(outfile, {}, model, obs,
+#                          output, None,
+#                          sps=sps,
+#                          tsample=None,
+#                          toptimize=0.0)
+#     print(f"\nWrote results to: {outfile}\n")
 
 if __name__=='__main__':
     
@@ -468,15 +541,61 @@ if __name__=='__main__':
     
     args = parser.parse_args()
     print(args)
+    
+#     # Set up with MPI or without MPI
+#     try:
+#         import mpi4py
+#         from mpi4py import MPI
+#         from schwimmbad import MPIPool
+
+#         mpi4py.rc.threads = False
+#         mpi4py.rc.recv_mprobe = False
+
+#         comm = MPI.COMM_WORLD
+#         size = comm.Get_size()
+
+#         withmpi = comm.Get_size() > 1
+#         start = MPI.Wtime()
+#     except ImportError as e:
+#         print('Failed to start MPI; are mpi4py and schwimmbad installed? Proceeding without MPI.')
+#         print(f'Message: {e}')
+#         withmpi = False
+#         start = time.time()
+    
+#     # if withmpi:
+#     #     with MPIPool() as pool:
+#     #         if not pool.is_master(): # TODO Emily: figure out what this does
+#     #             pool.wait()
+#     #             sys.exit(0)
+#     run(args.mag_in, args.mag_unc_in, 
+#         object_redshift=args.object_redshift,
+#         outfile=args.outfile,
+#         effective_samples=args.effective_samples,
+#         withmpi=withmpi,
+#         output_dynesty=args.output_dynesty
+#        )
+#     #     print(run_params)
+#     #     runtime = (MPI.Wtime()-start)/60.0
+#     # else:
+#     #     run(args.mag_in, args.mag_unc_in, 
+#     #             object_redshift=args.object_redshift,
+#     #             outfile=args.outfile,
+#     #             effective_samples=args.effective_samples,
+#     #             mpi_pool=None,
+#     #             output_dynesty=args.output_dynesty
+#     #            )
+#     runtime = (time.time()-start)/60.0
+    
+    
+#     print(f"Prospector finished in {runtime:.4f} minutes")
+    
+    
+    
+    ######################## Older code - trying to replace ########################################
     # run_params['nested_target_n_effective'] = args.nested_target_n_effective
     
-    # spec_noise, phot_noise = load_gp(**run_params)
-    # obs = load_obs(args=args, **run_params)
-    # model = load_model(obs=obs, **run_params)
-    # sps = load_sps(**run_params)
-    # noise_model = (spec_noise, phot_noise)
-    
-    obs, model, sps, noise_model = load_all(args=vars(args), **run_params)
+    obs, model, sps, noise_model = load_all(args.mag_in, args.mag_unc_in, args.object_redshift, 
+                                            **run_params)
     spec_noise, phot_noise = noise_model
     
     initial_theta_grid = np.around(np.arange(model.config_dict["logzsol"]['prior'].range[0], 
@@ -542,7 +661,7 @@ if __name__=='__main__':
         with MPIPool() as pool:
 
             # The dependent processes will run up to this point in the code
-            if not pool.is_master():
+            if not pool.is_master(): # TODO Emily: figure out what this means
                 pool.wait()
                 sys.exit(0)
             nprocs = pool.size
