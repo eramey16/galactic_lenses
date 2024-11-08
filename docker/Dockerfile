@@ -51,7 +51,7 @@ RUN git clone https://github.com/astro-datalab/datalab.git && \
 # ADD param_monocle.py /monocle/param_monocle.py
 # ADD util.py /monocle/util.py
 # ADD __init__.py /monocle/__init__.py
-# ENV PGPASSFILE="/credentials/pgpass.conf"
+ENV PYTHONPATH="{$PYTHONPATH}:/monocle/"
 WORKDIR /monocle
 WORKDIR exports
 
