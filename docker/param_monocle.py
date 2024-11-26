@@ -61,7 +61,7 @@ unlensed = {
 }
 
 
-output_dir = '/monocle/exports/'
+massmet_file = 'gallazzi_05_massmet.txt'
 
 gal = iptf16
 
@@ -99,7 +99,13 @@ class MassMet(priors.Prior):
 
     prior_params = ['mass_mini', 'mass_maxi', 'z_mini', 'z_maxi']
     distribution = truncnorm
-    massmet = np.loadtxt('gallazzi_05_massmet.txt')
+    # massmet = np.loadtxt('gallazzi_05_massmet.txt')
+    def __init__(self, z_mini, z_maxi, mass_mini, mass_maxi, massmet=None):
+        super().__init__(z_mini=z_mini, z_maxi=z_maxi, mass_mini=mass_mini, mass_maxi=mass_maxi)
+        if massmet is None: massmet = 'gallazzi_05_massmet.txt'
+        if os.path.exists(massmet): self.massmet = np.loadtxt(massmet)
+        else: self.massmet = np.loadtxt('/monocle/gallazzi_05_massmet.txt')
+        
     def __len__(self):
         
         """ Hack to work with Prospector 0.3
@@ -195,7 +201,7 @@ class MassMet(priors.Prior):
         return np.array([mass,met])
 
 def load_model(add_duste=False, opt_spec=False, smooth_spec = False,
-               add_dust1 = True, massmet = True, add_agn = False,
+               add_dust1 = True, use_massmet = True, massmet=None, add_agn = False,
                add_neb=True, luminosity_distance=None, obs=None, **extras):
     
     model_params = TemplateLibrary["parametric_sfh"]
@@ -264,9 +270,12 @@ def load_model(add_duste=False, opt_spec=False, smooth_spec = False,
             
     
     # Adding massmet param - ALWAYS use! 
-    if massmet:
+    if use_massmet:
         model_params['massmet'] = {"name": "massmet", "N": 2, "isfree": True, "init": [8.0, 0.0],
-                                   "prior": MassMet(z_mini=-1.0, z_maxi=0.19, mass_mini=7, mass_maxi=13)}
+                                   "prior": MassMet(z_mini=-1.0, z_maxi=0.19, 
+                                                    mass_mini=7, mass_maxi=13,
+                                                    massmet=massmet
+                                                   )}
         model_params['mass']['isfree']=False
         model_params['mass']['depends_on']= massmet_to_mass
         model_params['logzsol']['isfree'] =False
@@ -449,10 +458,10 @@ def halt(message):
         pass
     sys.exit(0)
 
-def load_all(mag_in, mag_unc_in, object_redshift=None, **run_params):
+def load_all(mag_in, mag_unc_in, object_redshift=None, massmet=None, **run_params):
     spec_noise, phot_noise = load_gp(**run_params)
     obs = load_obs(mag_in, mag_unc_in, object_redshift=object_redshift, **run_params)
-    model = load_model(obs=obs, **run_params)
+    model = load_model(obs=obs, massmet=massmet, **run_params)
     sps = load_sps(**run_params)
     noise_model = (spec_noise, phot_noise)
     
@@ -533,6 +542,7 @@ if __name__=='__main__':
     parser.add_argument('--mag_in', default=None, type=str)
     parser.add_argument('--mag_unc_in', default=None, type=str)
     parser.add_argument('--effective_samples', default=100000, type=int)
+    parser.add_argument('--massmet', type=str, default='/monocle/gallazzi_05_massmet.txt')
     
     args = parser.parse_args()
     # print(args)
@@ -588,8 +598,8 @@ if __name__=='__main__':
     ######################## Older code - trying to replace ########################################
     # run_params['nested_target_n_effective'] = args.nested_target_n_effective
     
-    obs, model, sps, noise_model = load_all(args.mag_in, args.mag_unc_in, args.object_redshift, 
-                                            **run_params)
+    obs, model, sps, noise_model = load_all(args.mag_in, args.mag_unc_in, args.object_redshift,
+                                            massmet=args.massmet, **run_params)
     spec_noise, phot_noise = noise_model
     
     initial_theta_grid = np.around(np.arange(model.config_dict["logzsol"]['prior'].range[0], 
@@ -687,7 +697,8 @@ if __name__=='__main__':
     #         pickle.dump(output, file)
     # else:
     from prospect.io import write_results as writer
-    outfile = args.outfile+'.h5'
+    if not '.h5' in args.outfile: outfile = args.outfile+'.h5'
+    else: outfile = args.outfile
     writer.write_hdf5(outfile, {}, model, obs,
                      output, None,
                      sps=sps,

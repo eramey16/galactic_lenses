@@ -4,14 +4,20 @@
 
 import pandas as pd
 import numpy as np
+import numpy.ma as ma
 from enum import IntEnum
 
 import sqlalchemy as sa
-from sqlalchemy import text
+from sqlalchemy import Column, Table, text
+from sqlalchemy import String, DateTime
+from sqlalchemy.types import BIGINT, FLOAT, REAL, VARCHAR, BOOLEAN, INT
 from sqlalchemy.pool import NullPool
 from sqlalchemy.exc import OperationalError
 
 import logging
+
+from prospect.io import read_results as reader
+import prospect_conversion as conv
 
 conn_string = 'postgresql+psycopg2://lensed_db_admin@nerscdb03.nersc.gov/lensed_db'
 
@@ -39,11 +45,51 @@ trac_cols = ['ls_id', 'ra', 'dec', 'type'] \
 phot_cols = ['z_phot_median_i AS z_phot_median', # cols we pull from phot catalog
                'z_phot_std_i AS z_phot_std', 'z_spec']
 
+# More tractor labels
 dchisq_labels = [f'dchisq_{i}' for i in range(1,6)]
 rchisq_labels = ['rchisq_g', 'rchisq_r', 'rchisq_z', 'rchisq_w1', 'rchisq_w2']
 
+# Add trac. and phot_z.
 desi_cols = ['trac.'+col for col in trac_cols] + ['phot_z.'+col for col in phot_cols]
 
+# # Column labels for h5 data # TODO: move to db func
+h5_cols = [f'maggies_{b}' for b in bands] + \
+        [f'maggies_unc_{b}' for b in bands] + \
+        [f'maggies_fit_{b}' for b in bands] + \
+        [f'{param}' for param in conv.prosp_params] + \
+        [f'{param}_sig_minus' for param in conv.prosp_params] + \
+        [f'{param}_sig_plus' for param in conv.prosp_params]
+
+# Get database columns from file columns
+db_cols = [
+    Column('ls_id', BIGINT, nullable=False),
+    Column('ra', FLOAT),
+    Column('dec', FLOAT),
+    Column('type', VARCHAR(4)),
+    *[Column(col, FLOAT) for col in trac_cols[4:] +
+      ['z_phot_median, z_phot_std', 'z_spec'] + h5_cols],
+    # All other cols
+    Column('lens_grade', VARCHAR(1)),
+    Column('lensed', BOOLEAN),
+    Column('id', BIGINT, primary_key=True, autoincrement=True),
+]
+
+def make_table(tbl_name, engine=None, meta=sa.MetaData(), bk_tbl='bookkeeping'):
+    if engine is None: engine = sa.create_engine(conn_string, poolclass=NullPool)
+    with engine.connect() as conn:
+        # Table columns
+        tbl = Table(
+            tbl_name,
+            meta,
+            *db_cols
+        )
+        
+        meta.create_all(conn, checkfirst=True)
+        conn.commit()
+
+def remove_gal(ls_id, engine=None, meta=sa.MetaData()):
+    pass
+    
 def desi_to_db(data):
     
     data = data.copy()
@@ -78,21 +124,21 @@ def desi_to_db(data):
     return data
 
 def insert_trac(gal_data, tbl_name, bk_tbl='bookkeeping', train=False,
-                    meta=sa.MetaData(), engine=None, logger=logging.getLogger('main')):
+                meta=sa.MetaData(), engine=None, logger=logging.getLogger('main')):
     """
     Inserts a pandas dataframe of galaxies into the database.
     """
-    if engine is None:
-        engine = sa.create_engine(conn_string, poolclass=NullPool)
+    if engine is None: engine = sa.create_engine(conn_string, poolclass=NullPool)
     
     with engine.connect() as conn:
         # Init tables
-        if engine.dialect.has_table(conn, tbl_name):
-            bk_tbl = sa.Table(bk_tbl, meta, autoload_with=engine)
-            gal_tbl = sa.Table(tbl_name, meta, autoload_with=engine)
-        else: raise ValueError(f"No table with name {tbl_name} in database") # TODO Em fix this
+        if not engine.dialect.has_table(conn, tbl_name):
+            logger.warning(f"No table {tbl_name} in the database. Creating table {tbl_name}.")
+            make_table(tbl_name, engine=engine, meta=meta)
+        bk_tbl = sa.Table(bk_tbl, meta, autoload_with=engine)
+        gal_tbl = sa.Table(tbl_name, meta, autoload_with=engine)
         
-        # Match db and data columns # TODO - maybe a better way?s
+        # Match db and data columns # TODO - maybe a better way?
         db_cols = [col.name for col in gal_tbl.columns.values() 
                        if col.name in gal_data.columns]
         tags = gal_data['tag']
@@ -117,3 +163,49 @@ def insert_trac(gal_data, tbl_name, bk_tbl='bookkeeping', train=False,
                                 )
             conn.execute(stmt)
             conn.commit()
+
+def update_prosp(bk_data, gal_data, gal_results, bk_tbl='bookkeeping', meta=sa.MetaData(), 
+                 engine=None, logger=logging.getLogger("main")):
+    
+    # Separate data structures
+    res, obs, model = gal_results
+    bf = res['bestfit']
+    
+    # import pdb; pdb.set_trace()
+    # Get model
+    quantiles = conv.quantiles_phot(res, model)
+    
+    # Read observed and fitted photometry into the table
+    gal_data.loc[0, [f'maggies_{b}' for b in bands]] = obs['maggies']
+    gal_data.loc[0, [f'maggies_unc_{b}' for b in bands]] = obs['maggies_unc']
+    gal_data.loc[0, [f'maggies_fit_{b}' for b in bands]] = bf['photometry']
+    
+    # Read predicted values into the table
+    for col in quantiles.columns:
+        gal_data.loc[0, f'{col}_sig_minus'] = quantiles[col][1] - quantiles[col][0]
+        gal_data.loc[0, f'{col}'] = quantiles[col][1]
+        gal_data.loc[0, f'{col}_sig_plus'] = quantiles[col][2] - quantiles[col][1]
+    
+    # Get database tables
+    if engine is None: engine = sa.create_engine(conn_string, poolclass=NullPool)
+    with engine.connect() as conn:
+        bk_tbl = sa.Table(bk_tbl, meta, autoload_with=engine)
+        if not engine.dialect.has_table(conn, bk_data.tbl_name[0]):
+            logger.warning(f"No table {tbl_name} in the database. Creating table {tbl_name}.")
+            make_table(tbl_name, engine=engine, meta=meta)
+        gal_tbl = sa.Table(bk_data.tbl_name[0], meta, autoload_with=engine)
+        
+        for col in conv.prosp_params:
+            if col not in [col.name for col in gal_tbl.columns.values()]:
+                raise ValueError(f"The columns of table {bk_data.tbl_name[0]} "
+                                 "do not match the output prospector parameters "
+                                 "(likely a code version issue).")
+
+        # Update gal table
+        stmt = gal_tbl.update().values(**gal_data.iloc[0])
+        conn.execute(stmt)
+        
+        # Update bookkeeping table
+        stmt = bk_tbl.update().values(stage=Status.PROCESSED)
+        conn.execute(stmt)
+        conn.commit()

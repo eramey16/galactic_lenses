@@ -1,1 +1,1 @@
-shifter --image=eramey16/monocle --volume='/pscratch/sd/e/eramey16/data/test/:/monocle/exports/' /bin/bash
+podman-hpc run --mount type=bind,source=/pscratch/sd/e/eramey16/data/monocle/test,target=/monocle/exports --mount type=bind,source=/global/homes/e/eramey16/galactic_lenses/docker,target=/monocle/ --mount type=bind,source=/global/homes/e/eramey16/.pgpass,target=/credentials/pgpass.conf -it eramey16/monocle:latest /bin/bash

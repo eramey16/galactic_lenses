@@ -44,13 +44,13 @@ RUN git clone https://github.com/astro-datalab/datalab.git && \
     cd .. && \
     rm -rf datalab
 
-
-# ADD classify.py /monocle/classify.py
-# ADD gallazzi_05_massmet.txt /monocle/gallazzi_05_massmet.txt
-# ADD rf.model /monocle/rf.model
-# ADD param_monocle.py /monocle/param_monocle.py
-# ADD util.py /monocle/util.py
-# ADD __init__.py /monocle/__init__.py
+ADD classify.py /monocle/classify.py
+ADD gallazzi_05_massmet.txt /monocle/gallazzi_05_massmet.txt
+ADD rf.model /monocle/rf.model
+ADD param_monocle.py /monocle/param_monocle.py
+ADD prospect_conversion.py /monocle/prospect_conversion.py
+ADD db_util.py /monocle/db_util.py
+ADD __init__.py /monocle/__init__.py
 ENV PYTHONPATH="{$PYTHONPATH}:/monocle/"
 WORKDIR /monocle
 WORKDIR exports
