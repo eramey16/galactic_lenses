@@ -324,7 +324,7 @@ if __name__ == '__main__':
                         help="Number of nodes to run in parallel (>1 spawns subprocess)")
     parser.add_argument('--nodb', action='store_true')
     parser.add_argument("-tn","--tbl_name",type=str,default=None, help="Database table to save to")
-    parser.add_argument("--train", type=bool, action='store_true')
+    parser.add_argument("--train", action='store_true')
     parser.add_argument("-o", "--outfile", type=str, default=None, help="output filename for prospector")
     parser.add_argument("--output_dir", type=str, default='/monocle/exports/', 
                         help="Directory to store output files")
