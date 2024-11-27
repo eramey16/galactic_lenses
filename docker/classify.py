@@ -292,8 +292,8 @@ class Classifier:
             if not self.check_db(ls_id): # Save to DB
                 # Calculate database quantities
                 q_data['tag'] = tag
-                util.insert_trac(q_data, tbl_name, engine=self.engine, meta=self.meta, 
-                                     bk_tbl=BKTBL, logger=self.logger)
+                util.insert_trac(q_data, tbl_name, engine=self.engine, meta=self.meta,
+                                 train=train, bk_tbl=BKTBL, logger=self.logger)
         
         # Galaxy should be in db now
         bk_data, gal_data = self.get_galaxy(ls_id, tag=tag)
