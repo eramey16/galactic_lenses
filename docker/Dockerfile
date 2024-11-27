@@ -44,6 +44,7 @@ RUN git clone https://github.com/astro-datalab/datalab.git && \
     cd .. && \
     rm -rf datalab
 
+<<<<<<< Updated upstream
 # ADD classify.py /monocle/classify.py
 # ADD gallazzi_05_massmet.txt /monocle/gallazzi_05_massmet.txt
 # ADD rf.model /monocle/rf.model
