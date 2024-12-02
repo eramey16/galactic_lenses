@@ -185,6 +185,7 @@ class Classifier:
         model = self.param.load_model(obs=obs, **run_params)
         util.update_prosp(bk_data, gal_data, (res, obs, model), 
                           meta=self.meta, engine=self.engine)
+        self.logger.info(f"Wrote DB data to table {bk_data.tbl_name[0]}")
     
     def _calc_mag(self, gal_data):
         # magnitudes, uncertainties, and fluxes
@@ -195,7 +196,6 @@ class Classifier:
     def run_prospector(self, gal_data, outfile=None, redo=False, effective_samples=100000,
                        nodes=None, use_redshift=False, **kwargs):
         """gal_data should be a pandas series"""
-
         mags, mag_uncs = self._calc_mag(gal_data)
         redshift = gal_data.z_phot_median if use_redshift else None
         
@@ -204,13 +204,14 @@ class Classifier:
         # If we already have the h5 file, don't re-run
         if os.path.exists(outfile) and not redo:
             self.logger.warning(f"File {outfile} exists, not re-running")
-            return
+            return outfile
         # Logging
         self.logger.info(f'Running prospector on galaxy {gal_data.ls_id}')
         
         # Run prospector through subprocess
         if nodes is not None and nodes > 1:
-            cmd = [f'mpirun -n {nodes}', 'python', self.param.__file__, 
+            cmd = [f'mpirun -n {nodes}', '--allow-run-as-root',
+                   'python', self.param.__file__, 
                    f'--effective_samples={effective_samples}',
                    f'--mag_in="{mags}"', f'--mag_unc_in="{mag_uncs}"',
                    f'--outfile={outfile}']
@@ -259,10 +260,11 @@ class Classifier:
                              sps=sps,
                              tsample=None,
                              toptimize=0.0)
-            print(f"\nWrote results to: {outfile}\n")
+            self.logger.info(f"\nWrote results to: {outfile}\n")
         
         if not os.path.exists(outfile):
             raise RuntimeError(f"Prospector run failed. Can't find {outfile}")
+        else: return outfile
     
     def check_db(self, ls_id=None, ra=None, dec=None, tag=None):
         if ls_id is None and ra is None and dec is None:
@@ -277,6 +279,7 @@ class Classifier:
         """ Runs a galaxy through prospector regardless of what stage of processing it's in """
         # Check if galaxy is already in database
         if nodb: raise NotImplementedError("Need to figure out how to deal with this")
+        
         if not self.check_db(ls_id, ra, dec, tag):
             # Need a table name for new entry
             if tbl_name is None:
@@ -289,7 +292,7 @@ class Classifier:
             # Set ls_id for getting database entry
             ls_id = q_data.ls_id[0]
             
-            if not self.check_db(ls_id): # Save to DB
+            if not self.check_db(ls_id, tag=tag): # Save to DB
                 # Calculate database quantities
                 q_data['tag'] = tag
                 util.insert_trac(q_data, tbl_name, engine=self.engine, meta=self.meta,
@@ -302,13 +305,13 @@ class Classifier:
         self.logger.debug(bk_data)
         if bk_data.stage[0] < util.Status.TRAC_DONE:
             raise NotImplementedError("Trac data isn't in the database. Not sure how this got here. "
-                                      "Find a way to update existing db entries.")
+                                      "Remove or update existing DB entry.")
         elif bk_data.stage[0] == util.Status.PROCESSED and not redo:
             self.logger.warning(f"Galaxy {bk_data.ls_id[0]} already processed. Not re-running")
             return
         
         # Run prospector / check that prospector has been run
-        self.run_prospector(gal_data.iloc[0], outfile=outfile, nodes=nodes, redo=redo)
+        outfile = self.run_prospector(gal_data.iloc[0], outfile=outfile, nodes=nodes, redo=redo)
         # Update database with prospector predictions
         self.update_db(bk_data, gal_data, outfile=outfile)
 
@@ -326,6 +329,7 @@ if __name__ == '__main__':
     parser.add_argument("-tn","--tbl_name",type=str,default=None, help="Database table to save to")
     parser.add_argument("--train", action='store_true')
     parser.add_argument("-o", "--outfile", type=str, default=None, help="output filename for prospector")
+    parser.add_argument("--redo", action='store_true')
     parser.add_argument("--output_dir", type=str, default='/monocle/exports/', 
                         help="Directory to store output files")
     parser.add_argument("--log_level", type=int, default=logging.INFO, help="Level for the logging object")
@@ -333,10 +337,10 @@ if __name__ == '__main__':
     # Parse arguments
     args = parser.parse_args()
     
-    classy = Classifier(logger=args.log_level)
+    classy = Classifier(logger=args.log_level, output_dir=args.output_dir)
     classy.run(args.ls_id, args.ra, args.dec, outfile=args.outfile, nodes=args.nodes,
                tbl_name=args.tbl_name, tag=args.tag, nodb=args.nodb, train=args.train,
-               output_dir=args.output_dir, logger=args.log_level)
+               redo=args.redo, logger=args.log_level)
         
         
         
