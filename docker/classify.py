@@ -194,7 +194,7 @@ class Classifier:
         return mags, mag_uncs
     
     def run_prospector(self, gal_data, outfile=None, redo=False, effective_samples=100000,
-                       nodes=None, use_redshift=False, **kwargs):
+                       withmpi=False, use_redshift=False, **kwargs):
         """gal_data should be a pandas series"""
         mags, mag_uncs = self._calc_mag(gal_data)
         redshift = gal_data.z_phot_median if use_redshift else None
@@ -208,20 +208,20 @@ class Classifier:
         # Logging
         self.logger.info(f'Running prospector on galaxy {gal_data.ls_id}')
         
-        # Run prospector through subprocess
-        if nodes is not None and nodes > 1:
-            cmd = [f'mpirun -n {nodes}', '--allow-run-as-root',
-                   'python', self.param.__file__, 
-                   f'--effective_samples={effective_samples}',
-                   f'--mag_in="{mags}"', f'--mag_unc_in="{mag_uncs}"',
-                   f'--outfile={outfile}']
+#         # Run prospector through subprocess
+#         if nodes is not None and nodes > 1:
+#             cmd = [f'mpirun -n {nodes}', '--allow-run-as-root',
+#                    'python', self.param.__file__, 
+#                    f'--effective_samples={effective_samples}',
+#                    f'--mag_in="{mags}"', f'--mag_unc_in="{mag_uncs}"',
+#                    f'--outfile={outfile}']
 
-            if redshift is not None:
-                cmd.insert(2, f'--object_redshift={redshift}')
-            cmd = ' '.join(cmd)
-            self.logger.info(f"Running: {cmd}")
-            subprocess.call(cmd, shell=True, env=os.environ)
-        else: # Run prospector in this file
+#             if redshift is not None:
+#                 cmd.insert(2, f'--object_redshift={redshift}')
+#             cmd = ' '.join(cmd)
+#             self.logger.info(f"Running: {cmd}")
+#             subprocess.call(cmd, shell=True, env=os.environ)
+        if not withmpi: # Run prospector in this file
             # Load prospector model
             run_params = self.param.run_params
             obs, model, sps, noise_model = self.param.load_all(mags, mag_uncs, redshift, **run_params)
@@ -274,12 +274,7 @@ class Classifier:
             if in_db is not None: return True
         return False
     
-    def run(self, ls_id=None, ra=None, dec=None, tag=None, outfile=None, nodes=None, 
-                tbl_name=None, nodb=False, redo=False, train=False, **kwargs):
-        """ Runs a galaxy through prospector regardless of what stage of processing it's in """
-        # Check if galaxy is already in database
-        if nodb: raise NotImplementedError("Need to figure out how to deal with this")
-        
+    def ensure_db(ls_id=None, ra=None, dec=None, tag=None, tbl_name=None):
         if not self.check_db(ls_id, ra, dec, tag):
             # Need a table name for new entry
             if tbl_name is None:
@@ -299,7 +294,15 @@ class Classifier:
                                  train=train, bk_tbl=BKTBL, logger=self.logger)
         
         # Galaxy should be in db now
-        bk_data, gal_data = self.get_galaxy(ls_id, tag=tag)
+        return self.get_galaxy(ls_id, tag=tag)
+    
+    def run(self, ls_id=None, ra=None, dec=None, tag=None, outfile=None, withmpi=False, 
+                tbl_name=None, nodb=False, redo=False, train=False, **kwargs):
+        """ Runs a galaxy through prospector regardless of what stage of processing it's in """
+        # Check if galaxy is already in database
+        if nodb: raise NotImplementedError("Need to figure out how to deal with this")
+        
+        bk_data, gal_data = self.ensure_db(ls_id, ra, dec, tag=tag, tbl_name=tbl_name)
         
         # Check if the stage is right
         self.logger.debug(bk_data)
@@ -311,7 +314,7 @@ class Classifier:
             return
         
         # Run prospector / check that prospector has been run
-        outfile = self.run_prospector(gal_data.iloc[0], outfile=outfile, nodes=nodes, redo=redo)
+        outfile = self.run_prospector(gal_data.iloc[0], outfile=outfile, withmpi=withmpi, redo=redo)
         # Update database with prospector predictions
         self.update_db(bk_data, gal_data, outfile=outfile)
 
@@ -323,8 +326,6 @@ if __name__ == '__main__':
     parser.add_argument("-r","--ra",type=float, default=None, help = "RA selection")
     parser.add_argument("-d","--dec",type=float, default=None, help="DEC selection")
     parser.add_argument("-t", "--tag", type=str, default=None, help="Galaxy tag in database")
-    parser.add_argument("-n", "--nodes", type=int, default=None,
-                        help="Number of nodes to run in parallel (>1 spawns subprocess)")
     parser.add_argument('--nodb', action='store_true')
     parser.add_argument("-tn","--tbl_name",type=str,default=None, help="Database table to save to")
     parser.add_argument("--train", action='store_true')
@@ -337,10 +338,96 @@ if __name__ == '__main__':
     # Parse arguments
     args = parser.parse_args()
     
+    # Initialize object
     classy = Classifier(logger=args.log_level, output_dir=args.output_dir)
-    classy.run(args.ls_id, args.ra, args.dec, outfile=args.outfile, nodes=args.nodes,
-               tbl_name=args.tbl_name, tag=args.tag, nodb=args.nodb, train=args.train,
-               redo=args.redo, logger=args.log_level)
+    
+    # Set up mpi
+    try:
+        import mpi4py
+        from mpi4py import MPI
+        from schwimmbad import MPIPool
+
+        mpi4py.rc.threads = False
+        mpi4py.rc.recv_mprobe = False
+
+        comm = MPI.COMM_WORLD
+        size = comm.Get_size()
+
+        withmpi = comm.Get_size() > 1
+        start = MPI.Wtime()
+    except ImportError as e:
+        print('Failed to start MPI; are mpi4py and schwimmbad installed? Proceeding without MPI.')
+        print(f'Message: {e}')
+        withmpi = False
+        start = time.time()
+    
+    # Sort out MPI
+    if withmpi:
+        # Get data in db
+        bk_data, gal_data = classy.ensure_db(args.ls_id, args.ra, args.dec, tag=args.tag, 
+                                             tbl_name=args.tbl_name)
+        bk_data, gal_data = bk_data.iloc[0], gal_data.iloc[0]
+        
+        # Check stage
+        if bk_data.stage < util.Status.TRAC_DONE:
+            raise NotImplementedError("Trac data isn't in the database. Not sure how this got here. "
+                                      "Remove or update existing DB entry.")
+        elif bk_data.stage == util.Status.PROCESSED and not redo:
+            classy.logger.warning(f"Galaxy {bk_data.ls_id} already processed. Not re-running")
+        else:
+            # Convert AB magnitude to maggies
+            mags, mag_uncs = classy._calc_mag(gal_data)
+            redshift = gal_data.z_phot_median if use_redshift else None
+            # Load prospector model
+            run_params = classy.param.run_params
+            obs, model, sps, noise_model = classy.param.load_all(mags, mag_uncs, redshift, **run_params)
+            spec_noise, phot_noise = noise_model
+
+            # Initialize prospector parameter grid
+            initial_theta_grid = np.around(np.arange(model.config_dict["logzsol"]['prior'].range[0],
+                                                     model.config_dict["logzsol"]['prior'].range[1],
+                                                     step=0.01), decimals=2)
+            for theta_init in initial_theta_grid:
+                sps.ssp.params["sfh"] = model.params['sfh'][0]
+                sps.ssp.params["imf_type"] = model.params['imf_type'][0]
+                sps.ssp.params["logzsol"] = theta_init
+                sps.ssp._compute_csp()
+            
+            run_params['nested_stop_kwargs'] = {"target_n_effective": args.effective_samples}
+            def new_lnfn(x):
+                return lnprobfn(x, model=model, obs=obs)
+            def new_prior(u):
+                return prior_transform(u, model=model)
+            
+            run_params["using_mpi"] = True
+            with MPIPool() as pool:
+            
+                # The dependent processes will run up to this point in the code
+                if not pool.is_master(): # TODO Emily: figure out what this means
+                    pool.wait()
+                    sys.exit(0)
+                nprocs = pool.size
+                # The parent process will oversee the fitting
+                run_params.update(dict(nlive_init=400, nested_method="rwalk", nested_dlogz_init=0.05))
+                output = fitting.run_dynesty_sampler(new_lnfn, new_prior, model.ndim,
+                                                     pool=pool, queue_size=nprocs, 
+                                                     stop_function=stopping_function,
+                                                     wt_function=weight_function,
+                                                     **run_params)
+                # Write results
+                ### TODO: change write results so that it records the model & time
+                writer.write_hdf5(args.outfile, {}, model, obs,
+                                 output, None,
+                                 sps=sps,
+                                 tsample=None,
+                                 toptimize=0.0)
+        
+    
+    # No MPI / after MPI has already run
+    classy.logger.warning("Testing testing")
+    classy.run(args.ls_id, args.ra, args.dec, outfile=args.outfile, withmpi=withmpi,
+                   tbl_name=args.tbl_name, tag=args.tag, nodb=args.nodb, train=args.train,
+                   redo=args.redo, logger=args.log_level)
         
         
         
