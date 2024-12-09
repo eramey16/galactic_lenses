@@ -373,10 +373,10 @@ if __name__ == '__main__':
         if bk_data.stage < util.Status.TRAC_DONE:
             raise NotImplementedError("Trac data isn't in the database. Not sure how this got here. "
                                       "Remove or update existing DB entry.")
-            return
+            sys.exit(0)
         elif bk_data.stage == util.Status.PROCESSED and not args.redo:
             classy.logger.warning(f"Galaxy {bk_data.ls_id} already processed. Not re-running")
-            return
+            sys.exit(0)
         
         if args.outfile is None:
             args.outfile = f"{args.output_dir}{bk_data.ls_id}.h5"
