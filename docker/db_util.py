@@ -67,7 +67,7 @@ db_cols = [
     Column('dec', FLOAT),
     Column('type', VARCHAR(4)),
     *[Column(col, FLOAT) for col in trac_cols[4:] +
-      ['z_phot_median, z_phot_std', 'z_spec'] + h5_cols],
+      ['z_phot_median', 'z_phot_std', 'z_spec'] + h5_cols],
     # All other cols
     Column('lens_grade', VARCHAR(1)),
     Column('lensed', BOOLEAN),
@@ -87,7 +87,7 @@ def make_table(tbl_name, engine=None, meta=sa.MetaData(), bk_tbl='bookkeeping'):
         meta.create_all(conn, checkfirst=True)
         conn.commit()
 
-def remove_gal(ls_id, engine=None, meta=sa.MetaData()):
+def remove_gal(ls_id, tag, engine=None, meta=sa.MetaData()):
     pass
     
 def desi_to_db(data):
@@ -191,8 +191,7 @@ def update_prosp(bk_data, gal_data, gal_results, bk_tbl='bookkeeping', meta=sa.M
     with engine.connect() as conn:
         bk_tbl = sa.Table(bk_tbl, meta, autoload_with=engine)
         if not engine.dialect.has_table(conn, bk_data.tbl_name[0]):
-            logger.warning(f"No table {tbl_name} in the database. Creating table {tbl_name}.")
-            make_table(tbl_name, engine=engine, meta=meta)
+            raise ValueError(f"No table {bk_data.tbl_name[0]} in the database")
         gal_tbl = sa.Table(bk_data.tbl_name[0], meta, autoload_with=engine)
         
         for col in conv.prosp_params:
@@ -202,10 +201,10 @@ def update_prosp(bk_data, gal_data, gal_results, bk_tbl='bookkeeping', meta=sa.M
                                  "(likely a code version issue).")
 
         # Update gal table
-        stmt = gal_tbl.update().values(**gal_data.iloc[0])
+        stmt = gal_tbl.update().where(gal_tbl.c.id==bk_data.tbl_id[0]).values(**gal_data.iloc[0])
         conn.execute(stmt)
         
         # Update bookkeeping table
-        stmt = bk_tbl.update().values(stage=Status.PROCESSED)
+        stmt = bk_tbl.update().where(bk_tbl.c.id==bk_data.id[0]).values(stage=Status.PROCESSED)
         conn.execute(stmt)
         conn.commit()

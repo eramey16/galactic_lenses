@@ -101,7 +101,8 @@ class Classifier:
                         gal_data = pd.DataFrame(conn.execute(stmt))
                         if len(gal_data)==0: raise ValueError(f"No entry {tbl_id} in table {tbl_name}")
                     else:
-                        raise ValueError(f"No table named {tbl_name} in the database.")
+                        raise ValueError(f"{ls_id} is defined in the bookkeeping table, " 
+                                         f"but there is no table named {tbl_name} in the database.")
 
                 return bk_data, gal_data
         
@@ -178,14 +179,15 @@ class Classifier:
 
         return db_data
     
-    def update_db(self, bk_data, gal_data, outfile, use_redshift=False):
+    def update_db(self, bk_data, gal_data, outfile, use_redshift=False, rank=None):
         # Get model
         run_params = self.param.run_params
         res, obs, _ = reader.results_from(outfile)
         model = self.param.load_model(obs=obs, **run_params)
-        util.update_prosp(bk_data, gal_data, (res, obs, model), 
-                          meta=self.meta, engine=self.engine)
-        self.logger.info(f"Wrote DB data to table {bk_data.tbl_name[0]}")
+        if rank is None or rank==0:
+            util.update_prosp(bk_data, gal_data, (res, obs, model), 
+                              meta=self.meta, engine=self.engine)
+            self.logger.info(f"Wrote file data to table {bk_data.tbl_name[0]}")
     
     def _calc_mag(self, gal_data):
         # magnitudes, uncertainties, and fluxes
@@ -193,78 +195,62 @@ class Classifier:
         mag_uncs = list(2.5 / np.log(10) / np.array([gal_data['snr_'+b] for b in util.bands]))
         return mags, mag_uncs
     
-    def run_prospector(self, gal_data, outfile=None, redo=False, effective_samples=10000,
+    def run_prospector(self, gal_data, outfile, redo=False, effective_samples=10000,
                        withmpi=False, use_redshift=False, **kwargs):
         """gal_data should be a pandas series"""
         mags, mag_uncs = self._calc_mag(gal_data)
         redshift = gal_data.z_phot_median if use_redshift else None
         
-        # Get output filename, if not provided
-        if outfile is None: outfile = f'{self.outdir}{gal_data.ls_id}.h5'
-        # If we already have the h5 file, don't re-run
-        if os.path.exists(outfile) and not redo:
-            self.logger.warning(f"File {outfile} exists, not re-running")
-            return outfile
-        # Logging
-        self.logger.info(f'Running prospector on galaxy {gal_data.ls_id}')
+        run_params = self.param.run_params
+        obs, model, sps, noise_model = self.param.load_all(mags, mag_uncs, redshift, **run_params)
+        spec_noise, phot_noise = noise_model
+
+        initial_theta_grid = np.around(np.arange(model.config_dict["logzsol"]['prior'].range[0],
+                                                 model.config_dict["logzsol"]['prior'].range[1],
+                                                 step=0.01), decimals=2)
+
+        for theta_init in initial_theta_grid:
+            sps.ssp.params["sfh"] = model.params['sfh'][0]
+            sps.ssp.params["imf_type"] = model.params['imf_type'][0]
+            sps.ssp.params["logzsol"] = theta_init
+            sps.ssp._compute_csp()
+
+        run_params['nested_stop_kwargs'] = {"target_n_effective": effective_samples}
         
-#         # Run prospector through subprocess
-#         if nodes is not None and nodes > 1:
-#             cmd = [f'mpirun -n {nodes}', '--allow-run-as-root',
-#                    'python', self.param.__file__, 
-#                    f'--effective_samples={effective_samples}',
-#                    f'--mag_in="{mags}"', f'--mag_unc_in="{mag_uncs}"',
-#                    f'--outfile={outfile}']
-
-#             if redshift is not None:
-#                 cmd.insert(2, f'--object_redshift={redshift}')
-#             cmd = ' '.join(cmd)
-#             self.logger.info(f"Running: {cmd}")
-#             subprocess.call(cmd, shell=True, env=os.environ)
-        if not withmpi: # Run prospector in this file
-            # Load prospector model
-            run_params = self.param.run_params
-            obs, model, sps, noise_model = self.param.load_all(mags, mag_uncs, redshift, **run_params)
-            spec_noise, phot_noise = noise_model
-
-            initial_theta_grid = np.around(np.arange(model.config_dict["logzsol"]['prior'].range[0],
-                                                     model.config_dict["logzsol"]['prior'].range[1],
-                                                     step=0.01), decimals=2)
-
-            for theta_init in initial_theta_grid:
-                sps.ssp.params["sfh"] = model.params['sfh'][0]
-                sps.ssp.params["imf_type"] = model.params['imf_type'][0]
-                sps.ssp.params["logzsol"] = theta_init
-                sps.ssp._compute_csp()
-
-            run_params['nested_stop_kwargs'] = {"target_n_effective": effective_samples}
-            # Probability and prior functions
-            def new_lnfn(x):
-                return self.param.lnprobfn(x, model=model, obs=obs,
-                                           def_sps=sps, def_noise_model=noise_model)
-            def new_prior(u):
-                return self.param.prior_transform(u, model=model)
-
-            # Run without MPI
-            run_params.update(dict(nlive_init=400, nested_method="rwalk", 
-                                   nested_dlogz_init=0.05))
-            self.logger.debug(f"Starting prospector in series with params: {run_params}")
-            output = fitting.run_dynesty_sampler(new_lnfn, new_prior, model.ndim,
-                                                 stop_function=stopping_function,
-                                                 wt_function=weight_function,
-                                                 **run_params)
+        # Probability and prior functions
+        global new_lnfn
+        global new_prior
+        def new_lnfn(x):
+            return self.param.lnprobfn(x, model=model, obs=obs,
+                                       def_sps=sps, def_noise_model=noise_model)
+        def new_prior(u):
+            return self.param.prior_transform(u, model=model)
         
-            # Write results to file
-            writer.write_hdf5(outfile, {}, model, obs,
-                             output, None,
-                             sps=sps,
-                             tsample=None,
-                             toptimize=0.0)
-            self.logger.info(f"\nWrote results to: {outfile}\n")
+        # Return stuff for MPI
+        if withmpi:
+            run_params["using_mpi"] = True
+            return run_params, obs, model, sps, noise_model, new_lnfn, new_prior
+
+        # Run without MPI
+        run_params.update(dict(nlive_init=400, nested_method="rwalk", 
+                               nested_dlogz_init=0.05))
+        self.logger.debug(f"Starting prospector in series with params: {run_params}")
         
+        output = fitting.run_dynesty_sampler(new_lnfn, new_prior, model.ndim,
+                                             stop_function=stopping_function,
+                                             wt_function=weight_function,
+                                             **run_params)
+
+        # Write results to file
+        writer.write_hdf5(outfile, {}, model, obs,
+                         output, None,
+                         sps=sps,
+                         tsample=None,
+                         toptimize=0.0)
+        self.logger.info(f"\nWrote results to: {outfile}\n")
+
         if not os.path.exists(outfile):
             raise RuntimeError(f"Prospector run failed. Can't find {outfile}")
-        else: return outfile
     
     def check_db(self, ls_id=None, ra=None, dec=None, tag=None):
         if ls_id is None and ra is None and dec is None:
@@ -274,7 +260,18 @@ class Classifier:
             if in_db is not None: return True
         return False
     
-    def ensure_db(self, ls_id=None, ra=None, dec=None, tag=None, tbl_name=None):
+    def ready_for_prospector(self, bk_data, gal_data, redo=False):
+        # Check if the stage is right
+        if bk_data.stage[0] < util.Status.TRAC_DONE:
+            raise NotImplementedError("Trac data isn't in the database. Not sure how this got here. "
+                                      "Remove or update existing DB entry.")
+        elif bk_data.stage[0] == util.Status.PROCESSED and not redo:
+            self.logger.warning(f"Galaxy {bk_data.ls_id[0]} already processed. Not re-running")
+            return False
+        return True
+    
+    def ensure_db(self, ls_id=None, ra=None, dec=None, tag=None, train=False, 
+                  tbl_name=None):
         if not self.check_db(ls_id, ra, dec, tag):
             # Need a table name for new entry
             if tbl_name is None:
@@ -291,33 +288,35 @@ class Classifier:
                 # Calculate database quantities
                 q_data['tag'] = tag
                 util.insert_trac(q_data, tbl_name, engine=self.engine, meta=self.meta,
-                                 train=train, bk_tbl=BKTBL, logger=self.logger)
+                                     train=train, bk_tbl=BKTBL, logger=self.logger)
         
         # Galaxy should be in db now
         return self.get_galaxy(ls_id, tag=tag)
     
-    def run(self, ls_id=None, ra=None, dec=None, tag=None, outfile=None, withmpi=False, 
+    def run(self, ls_id=None, ra=None, dec=None, tag=None, outfile=None, 
                 tbl_name=None, nodb=False, redo=False, train=False, **kwargs):
         """ Runs a galaxy through prospector regardless of what stage of processing it's in """
         # Check if galaxy is already in database
         if nodb: raise NotImplementedError("Need to figure out how to deal with this")
+        # Get output filename, if not provided
+        if outfile is None: outfile = f'{self.outdir}{gal_data.ls_id}.h5'
         
-        bk_data, gal_data = self.ensure_db(ls_id, ra, dec, tag=tag, tbl_name=tbl_name)
+        bk_data, gal_data = self.ensure_db(ls_id, ra, dec, tag=tag, train=train, tbl_name=tbl_name)
+        if not self.ready_for_prospector(bk_data, gal_data, redo=args.redo): return
         
-        # Check if the stage is right
-        self.logger.debug(bk_data)
-        if bk_data.stage[0] < util.Status.TRAC_DONE:
-            raise NotImplementedError("Trac data isn't in the database. Not sure how this got here. "
-                                      "Remove or update existing DB entry.")
-        elif bk_data.stage[0] == util.Status.PROCESSED and not redo:
-            self.logger.warning(f"Galaxy {bk_data.ls_id[0]} already processed. Not re-running")
-            return
+         # If we already have the h5 file, don't re-run
+        if os.path.exists(outfile) and not redo:
+            self.logger.warning(f"File {outfile} exists, not re-running")
+        else: # Run prospector / check that prospector has been run
+            self.run_prospector(gal_data.iloc[0], outfile=outfile, redo=redo)
         
-        # Run prospector / check that prospector has been run
-        outfile = self.run_prospector(gal_data.iloc[0], outfile=outfile, withmpi=withmpi, redo=redo)
         # Update database with prospector predictions
+        self.logger.info(f"Updating database with file contents: {outfile}")
         self.update_db(bk_data, gal_data, outfile=outfile)
 
+    def log_mpi(self, message, rank, level):
+        if rank==0:
+            self.logger.log(level, message)
 
 if __name__ == '__main__':
     # Command line arguments
@@ -364,162 +363,79 @@ if __name__ == '__main__':
         start = time.time()
     
     if withmpi:
+        rank = comm.Get_rank()
         run_params = classy.param.run_params
-        bk_data, gal_data = classy.ensure_db(args.ls_id, args.ra, args.dec, tag=args.tag, 
-                                             tbl_name=args.tbl_name)
-        bk_data, gal_data = bk_data.iloc[0], gal_data.iloc[0]
         
-        # Check stage
-        if bk_data.stage < util.Status.TRAC_DONE:
-            raise NotImplementedError("Trac data isn't in the database. Not sure how this got here. "
-                                      "Remove or update existing DB entry.")
-            sys.exit(0)
-        elif bk_data.stage == util.Status.PROCESSED and not args.redo:
-            classy.logger.warning(f"Galaxy {bk_data.ls_id} already processed. Not re-running")
-            sys.exit(0)
+        if rank==0: # Only check the database and do setup once
+            run_prosp=True
+            bk_data, gal_data = classy.ensure_db(args.ls_id, args.ra, args.dec, tag=args.tag, 
+                                                 train=args.train, tbl_name=args.tbl_name)
+            if not classy.ready_for_prospector(bk_data, gal_data, redo=args.redo):
+                run_prosp = False
         
-        if args.outfile is None:
-            args.outfile = f"{args.output_dir}{bk_data.ls_id}.h5"
-        
-        mags, mag_uncs = classy._calc_mag(gal_data)
-        redshift = gal_data.z_phot_median if args.use_redshift else None
-        
-        obs, model, sps, noise_model = classy.param.load_all(mags, mag_uncs, redshift,
-                                                massmet='/monocle/gallazzi_05_massmet.txt',
-                                                **run_params)
-        spec_noise, phot_noise = noise_model
+            if args.outfile is None:
+                args.outfile = f"{args.output_dir}{bk_data.ls_id[0]}.h5"
 
-        initial_theta_grid = np.around(np.arange(model.config_dict["logzsol"]['prior'].range[0], 
-                                    model.config_dict["logzsol"]['prior'].range[1], step=0.01), decimals=2)
-
-        for theta_init in initial_theta_grid:
-            sps.ssp.params["sfh"] = model.params['sfh'][0]
-            sps.ssp.params["imf_type"] = model.params['imf_type'][0]
-            sps.ssp.params["logzsol"] = theta_init
-            sps.ssp._compute_csp()
-
-
-        run_params['nested_stop_kwargs'] = {"target_n_effective": args.effective_samples}
-        def new_lnfn(x):
-            return classy.param.lnprobfn(x, model=model, obs=obs, def_sps=sps, def_noise_model=noise_model)
-        def new_prior(u):
-            return classy.param.prior_transform(u, model=model)
-        
-        run_params["using_mpi"] = True
-        with MPIPool() as pool:
-
-            # The dependent processes will run up to this point in the code
-            if not pool.is_master():
-                pool.wait()
-                sys.exit(0)
-            nprocs = pool.size
-            # The parent process will oversee the fitting
-            run_params.update(dict(nlive_init=400, nested_method="rwalk", nested_dlogz_init=0.05))
-            output = fitting.run_dynesty_sampler(new_lnfn, new_prior, model.ndim,
-                                                 pool=pool, queue_size=nprocs, 
-                                                 stop_function=stopping_function,
-                                                 wt_function=weight_function,
-                                                 **run_params)
-    
-        from prospect.io import write_results as writer
-        if not '.h5' in args.outfile: outfile = args.outfile+'.h5'
-        else: outfile = args.outfile
-        writer.write_hdf5(outfile, {}, model, obs,
-                         output, None,
-                         sps=sps,
-                         tsample=None,
-                         toptimize=0.0)
-        print(f"\nWrote results to: {outfile}\n")
-    
-#     # Set up mpi
-#     try:
-#         import mpi4py
-#         from mpi4py import MPI
-#         from schwimmbad import MPIPool
-
-#         mpi4py.rc.threads = False
-#         mpi4py.rc.recv_mprobe = False
-
-#         comm = MPI.COMM_WORLD
-#         size = comm.Get_size()
-
-#         withmpi = comm.Get_size() > 1
-#         start = MPI.Wtime()
-#     except ImportError as e:
-#         print('Failed to start MPI; are mpi4py and schwimmbad installed? Proceeding without MPI.')
-#         print(f'Message: {e}')
-#         withmpi = False
-#         start = time.time()
-    
-#     # Sort out MPI
-#     if withmpi:
-#         # Get data in db
-#         bk_data, gal_data = classy.ensure_db(args.ls_id, args.ra, args.dec, tag=args.tag, 
-#                                              tbl_name=args.tbl_name)
-#         bk_data, gal_data = bk_data.iloc[0], gal_data.iloc[0]
-        
-#         # Check stage
-#         if bk_data.stage < util.Status.TRAC_DONE:
-#             raise NotImplementedError("Trac data isn't in the database. Not sure how this got here. "
-#                                       "Remove or update existing DB entry.")
-#         elif bk_data.stage == util.Status.PROCESSED and not args.redo:
-#             classy.logger.warning(f"Galaxy {bk_data.ls_id} already processed. Not re-running")
-#         else:
-#             # Convert AB magnitude to maggies
-#             mags, mag_uncs = classy._calc_mag(gal_data)
-#             redshift = gal_data.z_phot_median if args.use_redshift else None
-#             # Load prospector model
-#             run_params = classy.param.run_params
-#             obs, model, sps, noise_model = classy.param.load_all(mags, mag_uncs, redshift, **run_params)
-#             spec_noise, phot_noise = noise_model
-
-#             # Initialize prospector parameter grid
-#             initial_theta_grid = np.around(np.arange(model.config_dict["logzsol"]['prior'].range[0],
-#                                                      model.config_dict["logzsol"]['prior'].range[1],
-#                                                      step=0.01), decimals=2)
-#             for theta_init in initial_theta_grid:
-#                 sps.ssp.params["sfh"] = model.params['sfh'][0]
-#                 sps.ssp.params["imf_type"] = model.params['imf_type'][0]
-#                 sps.ssp.params["logzsol"] = theta_init
-#                 sps.ssp._compute_csp()
+            if os.path.exists(args.outfile) and not args.redo:
+                classy.log_mpi(f"{args.outfile} exists, not re-running", rank, logging.WARNING)
+                classy.log_mpi(f"Updating database with file contents: {args.outfile}", rank, logging.INFO)
+                classy.update_db(bk_data, gal_data, outfile=args.outfile, rank=rank)
+                run_prosp = False
             
-#             run_params['nested_stop_kwargs'] = {"target_n_effective": args.effective_samples}
-#             def new_lnfn(x):
-#                 return classy.param.lnprobfn(x, model=model, obs=obs, def_sps=sps,
-#                                              def_noise_model=noise_model)
-#             def new_prior(u):
-#                 return classy.param.prior_transform(u, model=model)
-            
-#             run_params["using_mpi"] = True
-#             with MPIPool() as pool:
-            
-#                 # The dependent processes will run up to this point in the code
-#                 if not pool.is_master(): # TODO Emily: figure out what this means
-#                     pool.wait()
-#                     sys.exit(0)
-#                 nprocs = pool.size
-#                 # The parent process will oversee the fitting
-#                 run_params.update(dict(nlive_init=400, nested_method="rwalk", nested_dlogz_init=0.05))
-#                 output = fitting.run_dynesty_sampler(new_lnfn, new_prior, model.ndim,
-#                                                      pool=pool, queue_size=nprocs,
-#                                                      stop_function=stopping_function,
-#                                                      wt_function=weight_function,
-#                                                      **run_params)
-
-#             # Write results to file
-#             writer.write_hdf5(args.outfile, {}, model, obs,
-#                      output, None,
-#                      sps=sps,
-#                      tsample=None,
-#                      toptimize=0.0)
-#             classy.logger.info(f"\nWrote results to: {args.outfile}\n")
+        else:
+            bk_data, gal_data = None, None
+            args.outfile = None
+            run_prosp=None
         
-    
-#     # No MPI / after MPI has already run
-#     classy.logger.warning("Testing testing")
-#     # classy.run(args.ls_id, args.ra, args.dec, outfile=args.outfile, withmpi=withmpi,
-#     #                tbl_name=args.tbl_name, tag=args.tag, nodb=args.nodb, train=args.train,
-#     #                redo=args.redo, logger=args.log_level)
+        # Broadcast all necessary info to other processes
+        bk_data = comm.bcast(bk_data, root=0)
+        gal_data = comm.bcast(gal_data, root=0)
+        args.outfile = comm.bcast(args.outfile, root=0)
+        run_prosp = comm.bcast(run_prosp, root=0)
+        
+        if run_prosp:
+            results = classy.run_prospector(gal_data.iloc[0], outfile=args.outfile, 
+                                            withmpi=withmpi, redo=args.redo)
+            # Unpack results object
+            run_params, obs, model, sps, noise_model, new_lnfn, new_prior = results
+            
+            # # Probability and prior functions
+            # def new_lnfn(x):
+            #     return self.param.lnprobfn(x, model=model, obs=obs,
+            #                                def_sps=sps, def_noise_model=noise_model)
+            # def new_prior(u):
+            #     return self.param.prior_transform(u, model=model)
+
+            classy.log_mpi(f"Running prospector in parallel on {comm.Get_size()} threads.", 
+                           rank, logging.INFO)
+            with MPIPool() as pool:
+
+                # The dependent processes will run up to this point in the code
+                if not pool.is_master():
+                    pool.wait()
+                    sys.exit(0)
+                nprocs = pool.size
+                # The parent process will oversee the fitting
+                run_params.update(dict(nlive_init=400, nested_method="rwalk", nested_dlogz_init=0.05))
+                output = fitting.run_dynesty_sampler(new_lnfn, new_prior, model.ndim,
+                                                     pool=pool, queue_size=nprocs, 
+                                                     stop_function=stopping_function,
+                                                     wt_function=weight_function,
+                                                     **run_params)
+
+            from prospect.io import write_results as writer
+            writer.write_hdf5(args.outfile, {}, model, obs,
+                             output, None,
+                             sps=sps,
+                             tsample=None,
+                             toptimize=0.0)
+            print(f"\nWrote results to: {args.outfile}\n")
+
+            classy.update_db(bk_data, gal_data, outfile=args.outfile, rank=rank)
+    else:
+        classy.run(args.ls_id, args.ra, args.dec, outfile=args.outfile, withmpi=withmpi,
+                   tbl_name=args.tbl_name, tag=args.tag, nodb=args.nodb, train=args.train,
+                   redo=args.redo, logger=args.log_level)
         
         
         
