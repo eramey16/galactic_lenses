@@ -353,7 +353,6 @@ def load_obs(mag_in, mag_unc_in, object_redshift=None, spec = False,
     obs['spectrum'] = None
     obs['unc'] = None
     
-    print("Loaded observation")
     return(obs)
 
 def dust2_to_dust1(dust2=None, **kwargs):
@@ -370,7 +369,6 @@ def tmax_to_tage(tmax=None,zred=None,**kwargs):
 def load_sps(zcontinuous=1, compute_vega_mags=False, **extras):
     sps = CSPSpecBasis(zcontinuous=zcontinuous,
                        compute_vega_mags=compute_vega_mags)
-    print("Loaded SPS libraries")
     return sps
 
 def load_gp(**extras):
