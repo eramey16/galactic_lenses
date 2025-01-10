@@ -23,7 +23,8 @@ from prospect import fitting
 from prospect.io import write_results as writer, read_results as reader
 import dynesty
 from dynesty.dynamicsampler import stopping_function, weight_function
-import dill
+from dynesty import plotting as dyplot
+import matplotlib.pyplot as plt
 
 import db_util as util
 import prospect_conversion as conv
@@ -71,7 +72,6 @@ class Classifier:
         if '.py' in prosp_package: raise ValueError("Delete .py from package name")
         try:
             self.param = importlib.import_module(prosp_package)
-            self.param.dynesty.utils.pickle_module = dill # Try to fix checkpointing issue
             self.logger.debug(f"Loading parameters from file {self.param.__file__}")
         except Exception as e:
             raise ValueError(f"Can't import prospector module {prosp_package}. Error {e}")
@@ -86,9 +86,9 @@ class Classifier:
                     # Get entry in bookkeeping table and narrow down
                     stmt = sa.select(bk_tbl).where(bk_tbl.c.ls_id==ls_id)
                     bk_data = pd.DataFrame(conn.execute(stmt))
-                    if tag is not None:
+                    if tag is not None and not bk_data.empty:
                         bk_data = bk_data.loc[bk_data.tag==tag]
-                    if len(bk_data)==0: return None
+                    if bk_data.empty: return None
                     elif len(bk_data)>1:
                         raise ValueError(f"Multiple definitions of ls_id {ls_id} for tag {tag}.")
 
@@ -395,7 +395,9 @@ if __name__ == '__main__':
         
         if run_prosp:
             results = classy.run_prospector(gal_data.iloc[0], outfile=args.outfile, 
-                                            withmpi=withmpi, redo=args.redo)
+                                            withmpi=withmpi,
+                                            redo=args.redo,
+                                            effective_samples=args.effective_samples)
             # Unpack results object
             run_params, obs, model, sps, noise_model, new_lnfn, new_prior = results
             
@@ -422,6 +424,17 @@ if __name__ == '__main__':
                                                      stop_function=stopping_function,
                                                      wt_function=weight_function,
                                                      **run_params)
+#                 fig, axes = dyplot.runplot(output, logplot=True)
+#                 plt.savefig(f"{bk_data.ls_id[0]}_summary.png", bbox_inches='tight')
+#                 plt.clf()
+                
+#                 fig, axes = dyplot.traceplot(output, show_titles=True, trace_cmap='plasma')
+#                 plt.savefig(f"{bk_data.ls_id[0]}_traceplot.png", bbox_inches='tight')
+#                 plt.clf()
+                
+#                 fig, axes = dyplot.cornerpoints(output, cmap='plasma', kde=False)
+#                 plt.savefig(f"{bk_data.ls_id[0]}_corner.png", bbox_inches='tight')
+#                 plt.clf()
 
             from prospect.io import write_results as writer
             writer.write_hdf5(args.outfile, {}, model, obs,

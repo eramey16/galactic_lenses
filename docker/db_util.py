@@ -21,6 +21,9 @@ import prospect_conversion as conv
 
 conn_string = 'postgresql+psycopg2://lensed_db_admin@nerscdb03.nersc.gov/lensed_db'
 
+from psycopg2.extensions import register_adapter, AsIs
+register_adapter(np.int64, AsIs)
+
 class Status(IntEnum):
     INIT = 0
     TRAC_DONE = 1
@@ -87,8 +90,37 @@ def make_table(tbl_name, engine=None, meta=sa.MetaData(), bk_tbl='bookkeeping'):
         meta.create_all(conn, checkfirst=True)
         conn.commit()
 
-def remove_gal(ls_id, tag, engine=None, meta=sa.MetaData()):
-    pass
+def remove_gal(ls_id, tag, engine=None, meta=sa.MetaData(), logger=logging.getLogger('main')):
+    if engine is None: engine = sa.create_engine(conn_string, poolclass=NullPool)
+    
+    with engine.connect() as conn:
+        # Init tables
+        bk_tbl = sa.Table('bookkeeping', meta, autoload_with=engine)
+        stmt = sa.select(bk_tbl).where(bk_tbl.c.ls_id==ls_id)
+        bk_data = pd.DataFrame(conn.execute(stmt))
+        
+        if tag is not None and not bk_data.empty:
+            bk_data = bk_data.loc[bk_data.tag==tag]
+        if bk_data.empty:
+            logger.warning(f"No galaxy with ls_id {ls_id} and tag '{tag}' in database")
+            return
+        elif len(bk_data) > 1:
+            raise ValueError(f"Too many defined entries of galaxy {ls_id} for tag '{tag}'")
+        
+        tbl_name = bk_data.tbl_name[0]
+        if not engine.dialect.has_table(conn, tbl_name):
+            raise ValueError(f"No table '{tbl_name}' in the database.")
+        gal_tbl = sa.Table(tbl_name, meta, autoload_with=engine)
+        
+        # Delete bookkeeping entry
+        stmt = sa.delete(bk_tbl).where(bk_tbl.c.id==bk_data.id[0])
+        conn.execute(stmt)
+        
+        # Delete galaxy table entry
+        stmt = sa.delete(gal_tbl).where(gal_tbl.c.id==bk_data.tbl_id[0])
+        conn.execute(stmt)
+        
+        conn.commit()
     
 def desi_to_db(data):
     
