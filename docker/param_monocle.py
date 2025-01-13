@@ -100,10 +100,10 @@ class MassMet(priors.Prior):
     prior_params = ['mass_mini', 'mass_maxi', 'z_mini', 'z_maxi']
     distribution = truncnorm
     # massmet = np.loadtxt('gallazzi_05_massmet.txt')
-    def __init__(self, z_mini, z_maxi, mass_mini, mass_maxi, massmet=None):
+    def __init__(self, z_mini, z_maxi, mass_mini, mass_maxi, massmet_file=None):
         super().__init__(z_mini=z_mini, z_maxi=z_maxi, mass_mini=mass_mini, mass_maxi=mass_maxi)
-        if massmet is None: massmet = 'gallazzi_05_massmet.txt'
-        if os.path.exists(massmet): self.massmet = np.loadtxt(massmet)
+        if massmet_file is None: massmet_file = 'gallazzi_05_massmet.txt'
+        if os.path.exists(massmet_file): self.massmet = np.loadtxt(massmet_file)
         else: self.massmet = np.loadtxt('/monocle/gallazzi_05_massmet.txt')
         
     def __len__(self):
@@ -201,7 +201,7 @@ class MassMet(priors.Prior):
         return np.array([mass,met])
 
 def load_model(add_duste=False, opt_spec=False, smooth_spec = False,
-               add_dust1 = True, use_massmet = True, massmet=None, add_agn = False,
+               add_dust1 = True, use_massmet = True, massmet_file=None, add_agn = False,
                add_neb=True, luminosity_distance=None, obs=None, **extras):
     
     model_params = TemplateLibrary["parametric_sfh"]
@@ -274,7 +274,7 @@ def load_model(add_duste=False, opt_spec=False, smooth_spec = False,
         model_params['massmet'] = {"name": "massmet", "N": 2, "isfree": True, "init": [8.0, 0.0],
                                    "prior": MassMet(z_mini=-1.0, z_maxi=0.19, 
                                                     mass_mini=7, mass_maxi=13,
-                                                    massmet=massmet
+                                                    massmet_file=massmet_file
                                                    )}
         model_params['mass']['isfree']=False
         model_params['mass']['depends_on']= massmet_to_mass
@@ -316,7 +316,7 @@ def load_model(add_duste=False, opt_spec=False, smooth_spec = False,
     
     return model
 
-def load_obs(mag_in, mag_unc_in, object_redshift=None, spec = False, 
+def load_obs(mag_in, mag_unc_in, redshift=None, spec = False, 
              spec_file = None, maskspec=False, phottable=None,
              luminosity_distance=0, snr=10, **kwargs):
     filters = load_filters(filternames)
@@ -337,17 +337,16 @@ def load_obs(mag_in, mag_unc_in, object_redshift=None, spec = False,
     magerr = np.clip(magerr, 0.05, np.inf)
     maggies_unc = magerr * maggies / 1.086
     
-    # # Redshift
-    # if object_redshift is not None:
-    #     z = object_redshift
-    # else: z = None
+    # Redshift
+    if redshift is not None:
+        z = redshift
+    else: z = None
 
     # Build obs
-    obs = dict(wavelength=None, spectrum=None, unc=None, redshift=object_redshift,
+    obs = dict(wavelength=None, spectrum=None, unc=None, redshift=redshift,
                maggies=maggies, maggies_unc=maggies_unc, filters=filters)
     obs["phot_wave"] = [f.wave_effective for f in obs["filters"]]
     obs['phot_mask'] = np.isfinite(np.squeeze(maggies))
-    # obs = fix_obs(obs)
     
     obs['wavelength'] = None
     obs['spectrum'] = None
@@ -456,21 +455,21 @@ def halt(message):
         pass
     sys.exit(0)
 
-def load_all(mag_in, mag_unc_in, object_redshift=None, massmet=None, **run_params):
+def load_all(mag_in, mag_unc_in, redshift=None, massmet_file=None, **run_params):
     spec_noise, phot_noise = load_gp(**run_params)
-    obs = load_obs(mag_in, mag_unc_in, object_redshift=object_redshift, **run_params)
-    model = load_model(obs=obs, massmet=massmet, **run_params)
+    obs = load_obs(mag_in, mag_unc_in, redshift=redshift, **run_params)
+    model = load_model(obs=obs, massmet_file=massmet_file, **run_params)
     sps = load_sps(**run_params)
     noise_model = (spec_noise, phot_noise)
     
     return obs, model, sps, noise_model
 
-# def run(mag_in, mag_unc_in, effective_samples, outfile, object_redshift=None, 
+# def run(mag_in, mag_unc_in, effective_samples, outfile, redshift=None, 
 #         withmpi=False, run_params=run_params, output_dynesty=False, **kwargs):
 #     print("\n\nRunning a task with mpi\n\n")
 #     ### Get initial model, obs, sps, and noise
 #     obs, model, sps, noise_model = load_all(mag_in, mag_unc_in, 
-#                                             object_redshift=object_redshift,
+#                                             redshift=redshift,
 #                                             **run_params)
 #     spec_noise, phot_noise = noise_model
     
@@ -535,12 +534,12 @@ def load_all(mag_in, mag_unc_in, object_redshift=None, massmet=None, **run_param
 if __name__=='__main__':
     
     parser = prospect_args.get_parser()
-    parser.add_argument('--object_redshift', type=float, default=None,
+    parser.add_argument('--redshift', type=float, default=None,
                         help=("Redshift for the model"))
     parser.add_argument('--mag_in', default=None, type=str)
     parser.add_argument('--mag_unc_in', default=None, type=str)
     parser.add_argument('--effective_samples', default=100000, type=int)
-    parser.add_argument('--massmet', type=str, default='/monocle/gallazzi_05_massmet.txt')
+    parser.add_argument('--massmet_file', type=str, default='/monocle/gallazzi_05_massmet.txt')
     
     args = parser.parse_args()
     # print(args)
@@ -571,7 +570,7 @@ if __name__=='__main__':
 #     #             pool.wait()
 #     #             sys.exit(0)
 #     run(args.mag_in, args.mag_unc_in, 
-#         object_redshift=args.object_redshift,
+#         redshift=args.redshift,
 #         outfile=args.outfile,
 #         effective_samples=args.effective_samples,
 #         withmpi=withmpi,
@@ -580,7 +579,7 @@ if __name__=='__main__':
 #     #     runtime = (MPI.Wtime()-start)/60.0
 #     # else:
 #     #     run(args.mag_in, args.mag_unc_in, 
-#     #             object_redshift=args.object_redshift,
+#     #             redshift=args.redshift,
 #     #             outfile=args.outfile,
 #     #             effective_samples=args.effective_samples,
 #     #             mpi_pool=None,
@@ -596,8 +595,8 @@ if __name__=='__main__':
     ######################## Older code - trying to replace ########################################
     # run_params['nested_target_n_effective'] = args.nested_target_n_effective
     
-    obs, model, sps, noise_model = load_all(args.mag_in, args.mag_unc_in, args.object_redshift,
-                                            massmet=args.massmet, **run_params)
+    obs, model, sps, noise_model = load_all(args.mag_in, args.mag_unc_in, args.redshift,
+                                            massmet_file=args.massmet_file, **run_params)
     spec_noise, phot_noise = noise_model
     
     initial_theta_grid = np.around(np.arange(model.config_dict["logzsol"]['prior'].range[0], 

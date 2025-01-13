@@ -206,7 +206,7 @@ class Classifier:
 
         return db_data
     
-    def update_db(self, bk_data, gal_data, outfile, use_redshift=False):
+    def update_db(self, bk_data, gal_data, outfile, use_redshift=False, **kwargs):
         """ Now thread-safe """
         # Get model
         run_params = self.param.run_params
@@ -224,14 +224,14 @@ class Classifier:
         return mags, mag_uncs
     
     def run_prospector(self, gal_data, outfile, effective_samples=None,
-                       use_redshift=False, **kwargs):
+                       use_redshift=False, verbose=False, **kwargs):
         """gal_data should be a pandas series"""
         
         mags, mag_uncs = self._calc_mag(gal_data)
         redshift = gal_data.z_phot_median if use_redshift else None
         
         run_params = self.param.run_params
-        obs, model, sps, noise_model = self.param.load_all(mags, mag_uncs, redshift, **run_params)
+        obs, model, sps, noise_model = self.param.load_all(mags, mag_uncs, redshift=redshift, **run_params)
         spec_noise, phot_noise = noise_model
         self.log_mpi("Loaded obs, model, SPS, and noise model", logging.INFO)
 
@@ -245,10 +245,13 @@ class Classifier:
             sps.ssp.params["logzsol"] = theta_init
             sps.ssp._compute_csp()
         
+        print(effective_samples, use_redshift)
         if effective_samples is not None:
             run_params['nested_stop_kwargs'] = {"target_n_effective": effective_samples}
         else:
-            run_params['nested_stop_kwargs'] = {"post_thresh": 0.1}
+            run_params['nested_stop_kwargs'] = {"post_thresh": 0.05}
+        
+        run_params['verbose'] = verbose
         
         # Probability and prior functions
         global new_lnfn
@@ -380,7 +383,7 @@ class Classifier:
         
         # Update database with prospector predictions
         self.logger.info(f"Updating database with file contents: {outfile}")
-        self.update_db(bk_data, gal_data, outfile=outfile)
+        self.update_db(bk_data, gal_data, outfile=outfile, **kwargs)
 
     def log_mpi(self, message, level):
         if self.rank==0:
@@ -403,6 +406,7 @@ if __name__ == '__main__':
     parser.add_argument("--output_dir", type=str, default='/monocle/exports/', 
                         help="Directory to store output files")
     parser.add_argument("--log_level", type=int, default=logging.INFO, help="Level for the logging object")
+    parser.add_argument("-v", "--verbose", type=bool, default=True, help="Verbosity of dynesty")
     
     # Parse arguments
     args = parser.parse_args()
@@ -411,114 +415,6 @@ if __name__ == '__main__':
     classy = Classifier(logger=args.log_level, output_dir=args.output_dir)
     # TODO: find a way to pass the other ones as kwargs
     classy.run(**vars(args))
-    
-#     # Set up mpi
-#     try:
-#         import mpi4py
-#         from mpi4py import MPI
-#         from schwimmbad import MPIPool
-
-#         mpi4py.rc.threads = False
-#         mpi4py.rc.recv_mprobe = False
-
-#         comm = MPI.COMM_WORLD
-#         size = comm.Get_size()
-
-#         withmpi = comm.Get_size() > 1
-#         start = MPI.Wtime()
-#     except ImportError as e:
-#         print('Failed to start MPI; are mpi4py and schwimmbad installed? Proceeding without MPI.')
-#         print(f'Message: {e}')
-#         withmpi = False
-#         start = time.time()
-    
-#     if withmpi:
-#         rank = comm.Get_rank()
-#         run_params = classy.param.run_params
-        
-#         if rank==0: # Only check the database and do setup once
-#             run_prosp=True
-#             bk_data, gal_data = classy.ensure_db(args.ls_id, args.ra, args.dec, tag=args.tag, 
-#                                                  train=args.train, tbl_name=args.tbl_name)
-#             if not classy.ready_for_prospector(bk_data, gal_data, redo=args.redo):
-#                 run_prosp = False
-        
-#             if args.outfile is None:
-#                 args.outfile = f"{args.output_dir}{bk_data.ls_id[0]}.h5"
-
-#             if os.path.exists(args.outfile) and not args.redo:
-#                 classy.log_mpi(f"{args.outfile} exists, not re-running", logging.WARNING)
-#                 classy.log_mpi(f"Updating database with file contents: {args.outfile}", logging.INFO)
-#                 classy.update_db(bk_data, gal_data, outfile=args.outfile, rank=rank)
-#                 run_prosp = False
-            
-#         else:
-#             bk_data, gal_data = None, None
-#             args.outfile = None
-#             run_prosp=None
-        
-        # # Broadcast all necessary info to other processes
-        # bk_data = comm.bcast(bk_data, root=0)
-        # gal_data = comm.bcast(gal_data, root=0)
-        # args.outfile = comm.bcast(args.outfile, root=0)
-        # run_prosp = comm.bcast(run_prosp, root=0)
-        
-#         if run_prosp:
-#             results = classy.run_prospector(gal_data.iloc[0], outfile=args.outfile, 
-#                                             withmpi=withmpi,
-#                                             redo=args.redo,
-#                                             effective_samples=args.effective_samples)
-#             # Unpack results object
-#             run_params, obs, model, sps, noise_model, new_lnfn, new_prior = results
-            
-#             # # Probability and prior functions
-#             # def new_lnfn(x):
-#             #     return self.param.lnprobfn(x, model=model, obs=obs,
-#             #                                def_sps=sps, def_noise_model=noise_model)
-#             # def new_prior(u):
-#             #     return self.param.prior_transform(u, model=model)
-
-#             classy.log_mpi(f"Running prospector in parallel on {comm.Get_size()} threads.",
-#                            logging.INFO)
-#             with MPIPool() as pool:
-
-#                 # The dependent processes will run up to this point in the code
-#                 if not pool.is_master():
-#                     pool.wait()
-#                     sys.exit(0)
-#                 nprocs = pool.size
-#                 # The parent process will oversee the fitting
-#                 run_params.update(dict(nlive_init=400, nested_method="rwalk", nested_dlogz_init=0.05))
-#                 output = fitting.run_dynesty_sampler(new_lnfn, new_prior, model.ndim,
-#                                                      pool=pool, queue_size=nprocs, 
-#                                                      stop_function=stopping_function,
-#                                                      wt_function=weight_function,
-#                                                      **run_params)
-# #                 fig, axes = dyplot.runplot(output, logplot=True)
-# #                 plt.savefig(f"{bk_data.ls_id[0]}_summary.png", bbox_inches='tight')
-# #                 plt.clf()
-                
-# #                 fig, axes = dyplot.traceplot(output, show_titles=True, trace_cmap='plasma')
-# #                 plt.savefig(f"{bk_data.ls_id[0]}_traceplot.png", bbox_inches='tight')
-# #                 plt.clf()
-                
-# #                 fig, axes = dyplot.cornerpoints(output, cmap='plasma', kde=False)
-# #                 plt.savefig(f"{bk_data.ls_id[0]}_corner.png", bbox_inches='tight')
-# #                 plt.clf()
-
-#             from prospect.io import write_results as writer
-#             writer.write_hdf5(args.outfile, {}, model, obs,
-#                              output, None,
-#                              sps=sps,
-#                              tsample=None,
-#                              toptimize=0.0)
-#             print(f"\nWrote results to: {args.outfile}\n")
-
-#             classy.update_db(bk_data, gal_data, outfile=args.outfile, rank=rank)
-#     else:
-#         classy.run(args.ls_id, args.ra, args.dec, outfile=args.outfile, withmpi=withmpi,
-#                    tbl_name=args.tbl_name, tag=args.tag, nodb=args.nodb, train=args.train,
-#                    redo=args.redo, logger=args.log_level)
         
         
         
