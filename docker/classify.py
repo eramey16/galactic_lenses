@@ -223,7 +223,7 @@ class Classifier:
         mag_uncs = list(2.5 / np.log(10) / np.array([gal_data['snr_'+b] for b in util.bands]))
         return mags, mag_uncs
     
-    def run_prospector(self, gal_data, outfile, effective_samples=10000,
+    def run_prospector(self, gal_data, outfile, effective_samples=None,
                        use_redshift=False, **kwargs):
         """gal_data should be a pandas series"""
         
@@ -233,7 +233,7 @@ class Classifier:
         run_params = self.param.run_params
         obs, model, sps, noise_model = self.param.load_all(mags, mag_uncs, redshift, **run_params)
         spec_noise, phot_noise = noise_model
-        self.log_mpi("Loaded obs, model, SPS, and noise model", self.logger.INFO)
+        self.log_mpi("Loaded obs, model, SPS, and noise model", logging.INFO)
 
         initial_theta_grid = np.around(np.arange(model.config_dict["logzsol"]['prior'].range[0],
                                                  model.config_dict["logzsol"]['prior'].range[1],
@@ -244,8 +244,11 @@ class Classifier:
             sps.ssp.params["imf_type"] = model.params['imf_type'][0]
             sps.ssp.params["logzsol"] = theta_init
             sps.ssp._compute_csp()
-
-        run_params['nested_stop_kwargs'] = {"target_n_effective": effective_samples}
+        
+        if effective_samples is not None:
+            run_params['nested_stop_kwargs'] = {"target_n_effective": effective_samples}
+        else:
+            run_params['nested_stop_kwargs'] = {"post_thresh": 0.1}
         
         # Probability and prior functions
         global new_lnfn
@@ -269,6 +272,8 @@ class Classifier:
                     pool.wait()
                     sys.exit(0)
                 nprocs = pool.size
+                self.log_mpi(f"Starting prospector in parallel with {nprocs} threads."+
+                             f" Params {run_params}", logging.DEBUG)
                 # The parent process will oversee the fitting
                 output = fitting.run_dynesty_sampler(new_lnfn, new_prior, model.ndim,
                                                      pool=pool, queue_size=nprocs, 
@@ -282,8 +287,7 @@ class Classifier:
                                  tsample=None,
                                  toptimize=0.0)
                 self.logger.info(f"\nWrote results to: {outfile}\n")
-        else:
-            # Run without MPI
+        else: # Run without MPI
             self.logger.debug(f"Starting prospector in series with params: {run_params}")
 
             output = fitting.run_dynesty_sampler(new_lnfn, new_prior, model.ndim,
@@ -297,7 +301,7 @@ class Classifier:
                              sps=sps,
                              tsample=None,
                              toptimize=0.0)
-            self.logger.info(f"\nWrote results to: {outfile}\n")
+            self.log_mpi(f"\nWrote results to: {outfile}\n", logging.INFO)
         
         if not os.path.exists(outfile):
             raise RuntimeError(f"Prospector run failed. Can't find {outfile}")
@@ -317,7 +321,7 @@ class Classifier:
                                       "Remove or update existing DB entry.")
         elif bk_data.stage[0] == util.Status.PROCESSED and not redo:
             self.log_mpi(f"Galaxy {bk_data.ls_id[0]} already processed. Not re-running", 
-                         self.logger.WARNING)
+                         logging.WARNING)
             return False
         return True
     
@@ -395,7 +399,7 @@ if __name__ == '__main__':
     parser.add_argument("-o", "--outfile", type=str, default=None, help="output filename for prospector")
     parser.add_argument("--redo", action='store_true')
     parser.add_argument("--use_redshift", action='store_true')
-    parser.add_argument("--effective_samples", type=int, default=10000, help="# of prospector iterations")
+    parser.add_argument("--effective_samples", type=int, default=None, help="# of prospector iterations")
     parser.add_argument("--output_dir", type=str, default='/monocle/exports/', 
                         help="Directory to store output files")
     parser.add_argument("--log_level", type=int, default=logging.INFO, help="Level for the logging object")
@@ -406,9 +410,7 @@ if __name__ == '__main__':
     # Initialize object
     classy = Classifier(logger=args.log_level, output_dir=args.output_dir)
     # TODO: find a way to pass the other ones as kwargs
-    classy.run(args.ls_id, args.ra, args.dec, outfile=args.outfile,
-               tbl_name=args.tbl_name, tag=args.tag, nodb=args.nodb, train=args.train,
-               redo=args.redo, logger=args.log_level)
+    classy.run(**vars(args))
     
 #     # Set up mpi
 #     try:
