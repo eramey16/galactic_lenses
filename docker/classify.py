@@ -93,14 +93,15 @@ class Classifier:
             self.rank = self.comm.Get_rank()
 
             self.withmpi = size > 1
-            start = MPI.Wtime()
+            self.start = MPI.Wtime()
         except ImportError as e:
-            print('Failed to start MPI; are mpi4py and schwimmbad installed? Proceeding without MPI.')
-            print(f'Message: {e}')
+            self.logger.warning('Failed to start MPI; are mpi4py and schwimmbad installed?'+
+                                'Proceeding without MPI.')
+            self.logger.warning(f'Message: {e}')
             self.withmpi = False
             self.rank = None
             self.comm = None
-            start = time.time()
+            self.start = time.time()
         return self.withmpi
     
     def get_galaxy(self, ls_id, tag=None, loop=5):
@@ -245,11 +246,10 @@ class Classifier:
             sps.ssp.params["logzsol"] = theta_init
             sps.ssp._compute_csp()
         
-        print(effective_samples, use_redshift)
         if effective_samples is not None:
             run_params['nested_stop_kwargs'] = {"target_n_effective": effective_samples}
         else:
-            run_params['nested_stop_kwargs'] = {"post_thresh": 0.05}
+            run_params['nested_stop_kwargs'] = {"post_thresh": 0.01}
         
         run_params['verbose'] = verbose
         
@@ -284,7 +284,7 @@ class Classifier:
                                                      wt_function=weight_function,
                                                      **run_params)
                 # Write results to file
-                writer.write_hdf5(outfile, {}, model, obs,
+                writer.write_hdf5(outfile, run_params, model, obs,
                                  output, None,
                                  sps=sps,
                                  tsample=None,
@@ -297,9 +297,10 @@ class Classifier:
                                                  stop_function=stopping_function,
                                                  wt_function=weight_function,
                                                  **run_params)
+            tsample = time.time()-self.start
 
             # Write results to file
-            writer.write_hdf5(outfile, {}, model, obs,
+            writer.write_hdf5(outfile, run_params, model, obs,
                              output, None,
                              sps=sps,
                              tsample=None,
