@@ -24,6 +24,7 @@ from prospect.io import write_results as writer, read_results as reader
 import dynesty
 from dynesty.dynamicsampler import stopping_function, weight_function
 from dynesty import plotting as dyplot
+from functools import partial
 import matplotlib.pyplot as plt
 
 import db_util as util
@@ -34,7 +35,7 @@ register_adapter(np.int64, AsIs)
 
 BKTBL = 'bookkeeping'
 
-default_param = 'param_monocle' # TODO: add this to the python path
+default_param = 'param_monocle'
 
 class Classifier:
     
@@ -65,14 +66,16 @@ class Classifier:
         else:
             self.gal_data = pd.DataFrame() # column names?
         
-        if engine is None:
+        self.parallel_setup()
+        
+        if engine is None and (not self.withmpi or self.rank==0):
             self.engine = sa.create_engine(util.conn_string, poolclass=NullPool, future=True)
-        self.meta = sa.MetaData()
+            self.meta = sa.MetaData()
         
         if '.py' in prosp_package: raise ValueError("Delete .py from package name")
         try:
             self.param = importlib.import_module(prosp_package)
-            self.logger.debug(f"Loading parameters from file {self.param.__file__}")
+            self.log_mpi(f"Loading parameters from file {self.param.__file__}", logging.DEBUG)
         except Exception as e:
             raise ValueError(f"Can't import prospector module {prosp_package}. Error {e}")
     
@@ -83,6 +86,7 @@ class Classifier:
             from mpi4py import MPI
             from schwimmbad import MPIPool
             self.MPIPool = MPIPool
+            self.MPI = MPI
 
             mpi4py.rc.threads = False
             mpi4py.rc.recv_mprobe = False
@@ -234,6 +238,7 @@ class Classifier:
         run_params = self.param.run_params
         obs, model, sps, noise_model = self.param.load_all(mags, mag_uncs, redshift=redshift, **run_params)
         spec_noise, phot_noise = noise_model
+        run_params["sps_libraries"] = sps.ssp.libraries
         self.log_mpi("Loaded obs, model, SPS, and noise model", logging.INFO)
 
         initial_theta_grid = np.around(np.arange(model.config_dict["logzsol"]['prior'].range[0],
@@ -262,7 +267,12 @@ class Classifier:
         def new_prior(u):
             return self.param.prior_transform(u, model=model)
         
-        run_params.update(dict(nlive_init=400, nested_method="rwalk", nested_dlogz_init=0.05))
+        # # ensure that each processor runs its own version of FSPS
+        # # this ensures no cross-over memory usage
+        # global lnprobfn_fixed
+        # lnprobfn_fixed = partial(fitting.lnprobfn, sps=sps)
+        
+        run_params.update(dict(nlive_init=600, nested_method="rwalk", nested_dlogz_init=0.05))
         
         # Return stuff for MPI
         if self.withmpi:
@@ -277,38 +287,33 @@ class Classifier:
                 nprocs = pool.size
                 self.log_mpi(f"Starting prospector in parallel with {nprocs} threads."+
                              f" Params {run_params}", logging.DEBUG)
-                # The parent process will oversee the fitting
+                # # The parent process will oversee the fitting
                 output = fitting.run_dynesty_sampler(new_lnfn, new_prior, model.ndim,
                                                      pool=pool, queue_size=nprocs, 
                                                      stop_function=stopping_function,
                                                      wt_function=weight_function,
                                                      **run_params)
-                # Write results to file
-                writer.write_hdf5(outfile, run_params, model, obs,
-                                 output, None,
-                                 sps=sps,
-                                 tsample=None,
-                                 toptimize=0.0)
-                self.logger.info(f"\nWrote results to: {outfile}\n")
+                
+                tsample = self.MPI.Wtime() - self.start
         else: # Run without MPI
             self.logger.debug(f"Starting prospector in series with params: {run_params}")
-
             output = fitting.run_dynesty_sampler(new_lnfn, new_prior, model.ndim,
                                                  stop_function=stopping_function,
                                                  wt_function=weight_function,
                                                  **run_params)
             tsample = time.time()-self.start
 
-            # Write results to file
+        # Write results to file
+        if not self.withmpi or self.rank==0:
             writer.write_hdf5(outfile, run_params, model, obs,
                              output, None,
                              sps=sps,
-                             tsample=None,
+                             tsample=tsample,
                              toptimize=0.0)
             self.log_mpi(f"\nWrote results to: {outfile}\n", logging.INFO)
-        
-        if not os.path.exists(outfile):
-            raise RuntimeError(f"Prospector run failed. Can't find {outfile}")
+
+            if not os.path.exists(outfile):
+                raise RuntimeError(f"Prospector run failed. Can't find {outfile}")
     
     def check_db(self, ls_id=None, ra=None, dec=None, tag=None):
         if ls_id is None and ra is None and dec is None:
@@ -364,7 +369,6 @@ class Classifier:
     def run(self, ls_id=None, ra=None, dec=None, tag=None, outfile=None, 
                 tbl_name=None, nodb=False, redo=False, train=False, **kwargs):
         """ Runs a galaxy through prospector regardless of what stage of processing it's in """
-        self.parallel_setup()
         
         # Check if galaxy is already in database
         if nodb: raise NotImplementedError("Need to figure out how to deal with this")
@@ -379,7 +383,6 @@ class Classifier:
         if os.path.exists(outfile) and not redo:
             self.logger.warning(f"File {outfile} exists, not re-running")
         else: # Run prospector
-            # TODO: add in other kwargs when you get them working
             self.run_prospector(gal_data.iloc[0], outfile=outfile, **kwargs)
         
         # Update database with prospector predictions
@@ -407,14 +410,13 @@ if __name__ == '__main__':
     parser.add_argument("--output_dir", type=str, default='/monocle/exports/', 
                         help="Directory to store output files")
     parser.add_argument("--log_level", type=int, default=logging.INFO, help="Level for the logging object")
-    parser.add_argument("-v", "--verbose", type=bool, default=True, help="Verbosity of dynesty")
+    parser.add_argument("-v", "--verbose", action='store_true', help="Verbosity of dynesty")
     
     # Parse arguments
     args = parser.parse_args()
     
     # Initialize object
     classy = Classifier(logger=args.log_level, output_dir=args.output_dir)
-    # TODO: find a way to pass the other ones as kwargs
     classy.run(**vars(args))
         
         
