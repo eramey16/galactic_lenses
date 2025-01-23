@@ -22,9 +22,9 @@ RUN \
         bzip2 ca-certificates curl git \
         mlocate python3-jsonschema python-is-python3 \      
         less nano postgresql-client &&\ 
-    apt-get clean all 
+    apt-get clean all
 
-
+pip install python=3.13
 
 WORKDIR /opt
 ARG mpich=4.2.2
@@ -54,25 +54,25 @@ ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda-11.8/targets/x86_64-linux/l
 RUN ln -s /usr/local/cuda-11.8/targets/x86_64-linux/lib/stubs/libnvidia-ml.so /usr/local/cuda-11.8/targets/x86_64-linux/lib/stubs/libnvidia-ml.so.1 
 
 
-ENV PATH /opt/conda/bin:$PATH
-RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-4.5.11-Linux-x86_64.sh -O ~/miniconda.sh && \
-    /bin/bash ~/miniconda.sh -b -p /opt/conda && \
-    rm ~/miniconda.sh && \
-    /opt/conda/bin/conda clean -tipsy && \
-    ln -s /opt/conda/etc/profile.d/conda.sh /etc/profile.d/conda.sh && \
-    echo ". /opt/conda/etc/profile.d/conda.sh" >> ~/.bashrc && \
-    echo "conda activate base" >> ~/.bashrc
+# ENV PATH /opt/conda/bin:$PATH
+# RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-4.5.11-Linux-x86_64.sh -O ~/miniconda.sh && \
+#     /bin/bash ~/miniconda.sh -b -p /opt/conda && \
+#     rm ~/miniconda.sh && \
+#     /opt/conda/bin/conda clean -tipsy && \
+#     ln -s /opt/conda/etc/profile.d/conda.sh /etc/profile.d/conda.sh && \
+#     echo ". /opt/conda/etc/profile.d/conda.sh" >> ~/.bashrc && \
+#     echo "conda activate base" >> ~/.bashrc
 
 
 ENV TINI_VERSION v0.16.1
 ADD https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini /usr/bin/tini
 RUN chmod +x /usr/bin/tini
-RUN conda upgrade -n base conda
-RUN conda install conda-forge::openbabel
+# RUN conda upgrade -n base conda
+# RUN conda install conda-forge::openbabel
 
 
 RUN pip install setuptools
-RUN python -m pip install mpi4py -i https://pypi.anaconda.org/mpi4py/simple
+RUN python -m pip install mpi4py
 RUN pip install ipython numpy pandas scipy astropy h5py hdf5
 RUN pip install sqlalchemy psycopg2 requests scikit-learn
 RUN pip install emcee dynesty schwimmbad mpi4py six curl
