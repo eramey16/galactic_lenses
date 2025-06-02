@@ -119,7 +119,7 @@ class Classifier:
                     stmt = sa.select(bk_tbl).where(bk_tbl.c.ls_id==ls_id)
                     bk_data = pd.DataFrame(conn.execute(stmt))
                     if tag is not None and not bk_data.empty:
-                        bk_data = bk_data.loc[bk_data.tag==tag]
+                        bk_data = bk_data.loc[bk_data.tag==tag].reset_index(drop=True)
                     if bk_data.empty: return None
                     elif len(bk_data)>1:
                         raise ValueError(f"Multiple definitions of ls_id {ls_id} for tag {tag}.")
