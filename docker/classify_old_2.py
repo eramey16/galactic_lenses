@@ -130,11 +130,11 @@ class Classifier:
                     tbl_id = bk_data.tbl_id[0]
                     
                     gal_tbl = sa.Table(tbl_name, self.meta, autoload_with=self.engine)
-                    stmt = sa.select(gal_tbl).where(gal_tbl.c.id==tbl_id)
+                    stmt = sa.select(gal_tbl).where(gal_tbl.c.id==tbl_id).where(bk_tbl.c.tag==tag)
                     gal_data = pd.DataFrame(conn.execute(stmt))
                     if len(gal_data)==0:
                         raise ValueError(f"No entry {tbl_id} in table {tbl_name}. Bookkeeping data incorrect.")
-                    elif len(gal_data)>1: raise ValueError(f"ID {tbl_id} is multiply defined in table {tbl_name}")
+                    elif len(gal_data)>1: raise ValueError(f"ls_id {ls_id} is multiply defined in table {tbl_name}")
 
                 return bk_data, gal_data
         
@@ -173,7 +173,7 @@ class Classifier:
             radius (float,int): Radius in degrees used in the q3c radial query to NOAO.
                 Defaults to 1 arcseconds/0.0002777 degrees.
             data_type (str): Data type to filter query results from NOAO. Should really
-                only use types "REX","DEV","EXP", or "COMP". Defaults to
+                only use types "PSF","REX","DEV","EXP","COMP", or "DUP". Defaults to
                 "None" in order to return all results. You can bundle types to return
                 data from multiple sources; follow PostGres formatting to do so.
             limit (int):Limit the number of rows returned from NOAO query. Defaults to 1.
@@ -197,8 +197,7 @@ class Classifier:
                                   f"""ORDER BY q3c_dist({ra}, {dec}, trac.ra, trac.dec) ASC """]
         else: # Something went wrong
             raise ValueError("Must run query_galaxy with either ra and dec or ls_id")
-        if limit is not None:
-            query += [f"""LIMIT {limit}"""]
+        query += [f"""LIMIT {limit}"""]
 
         if data_type is not None:
             query.insert(1, f""" AND (type = '{data_type}') """)
@@ -214,12 +213,11 @@ class Classifier:
     
     def update_db(self, bk_data, gal_data, outfile, use_redshift=False, **kwargs):
         """ Now thread-safe """
+        # Get model
+        run_params = self.param.run_params
+        res, obs, _ = reader.results_from(outfile)
+        model = self.param.load_model(obs=obs, **run_params)
         if not self.withmpi or self.rank==0:
-            # Get results and model
-            run_params = self.param.run_params
-            res, obs, _ = reader.results_from(outfile)
-            model = self.param.load_model(obs=obs, **run_params)
-            # Update database
             util.update_prosp(bk_data, gal_data, (res, obs, model), 
                               meta=self.meta, engine=self.engine)
             self.logger.info(f"Wrote file data to table {bk_data.tbl_name[0]}")
@@ -234,25 +232,14 @@ class Classifier:
                        use_redshift=False, verbose=False, **kwargs):
         """gal_data should be a pandas series"""
         # Fairly certain I need to make this part thread safe
-
-        # Thread-safe model loading
-        if not self.withmpi or self.rank==0:
-            mags, mag_uncs = self._calc_mag(gal_data)
-            redshift = gal_data.z_phot_median if use_redshift else None
-            
-            loaded = mags, mag_uncs, redshift #, run_params, obs, model, sps, noise_model
-        else: loaded = None
-
-        if self.withmpi:
-            loaded = self.comm.bcast(loaded, root=0)
-            mags, mag_uncs, redshift = loaded
-
+        
+        mags, mag_uncs = self._calc_mag(gal_data)
+        redshift = gal_data.z_phot_median if use_redshift else None
+        
         run_params = self.param.run_params
-        run_params['massmet_file'] = kwargs['massmet_file']
         obs, model, sps, noise_model = self.param.load_all(mags, mag_uncs, redshift=redshift, **run_params)
         spec_noise, phot_noise = noise_model
         run_params["sps_libraries"] = sps.ssp.libraries
-        
         self.log_mpi("Loaded obs, model, SPS, and noise model", logging.INFO)
 
         initial_theta_grid = np.around(np.arange(model.config_dict["logzsol"]['prior'].range[0],
@@ -300,7 +287,7 @@ class Classifier:
                     sys.exit(0)
                 nprocs = pool.size
                 self.log_mpi(f"Starting prospector in parallel with {nprocs} threads."+
-                             f" Params {run_params}", logging.INFO)
+                             f" Params {run_params}", logging.DEBUG)
                 # # The parent process will oversee the fitting
                 output = fitting.run_dynesty_sampler(new_lnfn, new_prior, model.ndim,
                                                      pool=pool, queue_size=nprocs, 
@@ -316,7 +303,6 @@ class Classifier:
                                                  wt_function=weight_function,
                                                  **run_params)
             tsample = time.time()-self.start
-        self.log_mpi(f"Prospector ran in {tsample/60} minutes", logging.INFO)
 
         # Write results to file
         if not self.withmpi or self.rank==0:
@@ -386,14 +372,13 @@ class Classifier:
         
         # If we already have the h5 file, don't re-run
         if os.path.exists(outfile) and not redo:
-            self.log_mpi(f"File {outfile} exists, not re-running", logging.WARNING)
+            self.logger.warning(f"File {outfile} exists, not re-running")
         else: # Run prospector
             self.run_prospector(gal_data.iloc[0], outfile=outfile, **kwargs)
         
         # Update database with prospector predictions
-        if not self.withmpi or self.rank==0:
-            self.logger.info(f"Updating database with file contents: {outfile}")
-            self.update_db(bk_data, gal_data, outfile=outfile, **kwargs)
+        self.logger.info(f"Updating database with file contents: {outfile}")
+        self.update_db(bk_data, gal_data, outfile=outfile, **kwargs)
 
     def log_mpi(self, message, level):
         if self.rank==0:
@@ -412,8 +397,6 @@ if __name__ == '__main__':
     parser.add_argument("-o", "--outfile", type=str, default=None, help="output filename for prospector")
     parser.add_argument("--redo", action='store_true')
     parser.add_argument("--use_redshift", action='store_true')
-    parser.add_argument("--massmet_file", type=str, default='/monocle/gallazzi_05_massmet.txt', 
-                        help="Path to massmet file gallazzi_05_massmet.txt")
     parser.add_argument("--effective_samples", type=int, default=None, help="# of prospector iterations")
     parser.add_argument("--output_dir", type=str, default='/monocle/exports/', 
                         help="Directory to store output files")

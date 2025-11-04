@@ -32,6 +32,10 @@ class Status(IntEnum):
 bands = ['g', 'r', 'i', 'z', 'w1', 'w2']
 colors = ['g_r', 'i_z', 'r_i', 'r_z', 'w1_w2', 'z_w1']
 
+# More tractor labels
+dchisq_labels = [f'dchisq_{i}' for i in range(1,6)]
+rchisq_labels = ['rchisq_'+b for b in bands]
+
 # cols we pull from tractor catalog
 trac_cols = ['ls_id', 'ra', 'dec', 'type'] \
             + ['dered_mag_'+b for b in bands] \
@@ -39,8 +43,8 @@ trac_cols = ['ls_id', 'ra', 'dec', 'type'] \
             + colors \
             + ['snr_'+b for b in bands] \
             + ['flux_ivar_'+b for b in bands] \
-            + ['dchisq_'+str(i) for i in range(1,6)] \
-            + ['rchisq_'+b for b in bands] \
+            + dchisq_labels \
+            + rchisq_labels \
             + ['sersic', 'sersic_ivar'] \
             + ['psfsize_g', 'psfsize_r', 'psfsize_z'] \
             + ['shape_r', 'shape_e1', 'shape_e2'] \
@@ -48,12 +52,10 @@ trac_cols = ['ls_id', 'ra', 'dec', 'type'] \
 phot_cols = ['z_phot_median_i AS z_phot_median', # cols we pull from phot catalog
                'z_phot_std_i AS z_phot_std', 'z_spec']
 
-# More tractor labels
-dchisq_labels = [f'dchisq_{i}' for i in range(1,6)]
-rchisq_labels = ['rchisq_g', 'rchisq_r', 'rchisq_z', 'rchisq_w1', 'rchisq_w2']
-
 # Add trac. and phot_z.
 desi_cols = ['trac.'+col for col in trac_cols] + ['phot_z.'+col for col in phot_cols]
+filter_cols = ['dered_mag_'+b for b in bands]+['ls_id', 'ra', 'dec', 'type'] + \
+                ['rchisq_'+b for b in bands]
 
 # # Column labels for h5 data # TODO: move to db func
 h5_cols = [f'maggies_{b}' for b in bands] + \
@@ -121,6 +123,24 @@ def remove_gal(ls_id, tag, engine=None, meta=sa.MetaData(), logger=logging.getLo
         conn.execute(stmt)
         
         conn.commit()
+
+def clean_desi(data, duplicates=False, dropna=True, filter_cols=filter_cols):
+    """ Cleans data from desi query """
+    data = data[data.type!='DUP']
+    data = data[data.type!='PSF']
+
+    data.loc[data.z_phot_median<0, 'z_phot_median'] = None
+    data.loc[data.z_phot_std<0, 'z_phot_std'] = None
+    data.loc[data.z_spec<0, 'z_spec'] = None
+
+    # Remove bad / duplicate entries
+    data.replace([np.inf, -np.inf], np.nan, inplace=True)
+    if dropna:
+        data.dropna(subset=filter_cols, inplace=True)
+    if not duplicates:
+        data.drop_duplicates(subset=['ls_id'], inplace=True)
+
+    return data
     
 def desi_to_db(data):
     
