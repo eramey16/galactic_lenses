@@ -5,6 +5,8 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import RepeatedStratifiedKFold
 from sklearn.metrics import classification_report, roc_auc_score, confusion_matrix
 from sklearn.metrics import roc_curve, precision_recall_curve
+from sklearn.metrics import make_scorer, precision_score, recall_score
+from sklearn.metrics import balanced_accuracy_score
 from sklearn.impute import KNNImputer
 import xgboost as xgb
 import matplotlib.pyplot as plt
@@ -30,6 +32,31 @@ train_file = os.path.expandvars('$SCRATCH/data/monocle/lrg_train.parquet')
 def flux2mag(flux):
     mags = 22.5 - 2.5*np.log10(flux + 1e-10)
     return mags
+
+# def precision_at_recall(y_true, y_pred_proba, min_recall=0.60):
+#     """
+#     Find threshold that gives min_recall, return precision at that threshold
+#     """
+#     thresh = np.linspace(.5, 1, 50).reshape(-1,1) # 50 x 1
+#     y_pred_proba = np.array(y_pred_proba).reshape(1, -1) # 1 x N
+#     y_true = np.array(y_true).astype(int).reshape(1, -1) # 1 x N
+
+#     y_pred = y_pred_proba > thresh # Should be 50 x N
+#     tp, tn = np.sum(y_true & y_pred, axis=0), np.sum(~y_true & ~y_pred, axis=0)
+#     fp, fn = np.sum(~y_true & y_pred, axis=0), np.sum(y_true & ~y_pred, axis=0)
+#     precision = tp / (tp + fp) # 50 x 1
+#     recall = tp / (tp + fn) # 50 x 1
+    
+#     # Find threshold where recall >= min_recall
+#     valid_idx = np.where(recall >= min_recall)[0]
+#     if len(valid_idx) == 0:
+#         return None
+    
+#     # Return best precision among valid thresholds
+#     return precision[valid_idx].max()
+
+# modified_precision = make_scorer(precision_at_recall, 
+#                                  needs_proba=True, min_recall=0.90)
 
 class ModelTrainer:
     
@@ -198,7 +225,11 @@ class ModelTrainer:
         X, y = self.data[feature_cols], self.data['lensed']
         y = pd.Series(np.array(y).astype(int), name='lensed') # Formatting
 
-        cv_scores = []
+        cv_scores = {'precision': [], 
+                     'recall': [],
+                     'balanced_accuracy': [],
+                     'roc_auc': []
+                    }
 
         kf = RepeatedStratifiedKFold(n_splits=5, n_repeats=3, random_state=self.seed)
         for i, (train_index, val_index) in enumerate(kf.split(X, y)):
@@ -214,31 +245,21 @@ class ModelTrainer:
 
                 X_train = pd.concat([X_train, X_aug]).reset_index(drop=True)
                 y_train = pd.concat([y_train, y_aug]).reset_index(drop=True)
-            
-            # df_train = X_train.join(y_train)
-            # df_val = X_val.join(y_val)
 
-            # # Augment if required
-            # if self.n_aug > 1:
-            #     # Break into lensed and unlensed portions
-            #     df_train_lensed = df_train[df_train['lensed'].astype(bool)==True]
-            #     df_train_unlensed = df_train[df_train['lensed'].astype(bool)!=True]
-            #     # Augment only lensed training data
-            #     df_train_lensed = self._augment_data(df_train_lensed)
-            #     df_train = pd.concat([df_train_lensed, df_train_unlensed], ignore_index=True)
-            
-            # Now we can finally use only the feature columns
-            # X_train, y_train = df_train[feature_cols], df_train['lensed']
-            # X_val, y_val = df_val[feature_cols], df_train['lensed']
             y_train, y_val = np.array(y_train).astype(int), np.array(y_val).astype(int)
 
             self.trained_model = self.model(**self.model_params)
             self.trained_model.fit(X_train, y_train)
 
-            y_pred = self.trained_model.predict_proba(X_val)[:, 1]
-            cv_scores.append(roc_auc_score(y_val, y_pred))
+            y_pred = self.trained_model.predict(X_val)
+            cv_scores['precision'].append(precision_score(y_val, y_pred))
+            cv_scores['balanced_accuracy'].append(
+                balanced_accuracy_score(y_val, y_pred))
+            cv_scores['recall'].append(recall_score(y_val, y_pred))
+            cv_scores['roc_auc'].append(roc_auc_score(y_val, y_pred))
         
-        print(f"\nMean CV AUC: {np.mean(cv_scores):.4f} ± {np.std(cv_scores):.4f}")
+        for key in cv_scores:
+            print(f"\nMean {key} score: {np.mean(cv_scores[key]):.4f} ± {np.std(cv_scores[key]):.4f}")
         return cv_scores
 
 

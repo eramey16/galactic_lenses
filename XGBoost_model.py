@@ -13,6 +13,9 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_curve, precision_recall_curve
 import seaborn as sns
+import sqlalchemy as sa
+from sqlalchemy import create_engine
+from sqlalchemy.pool import NullPool
 
 seed = 42
 
@@ -20,7 +23,7 @@ def flux2mag(flux):
     mags = 22.5 - 2.5*np.log10(flux)
     return mags
 
-def augment_lensed_magnitudes(df, n_augmentations=3):
+def augment_lensed_from_raw(lensed_df, n_augmentations=3):
     """
     Augment magnitudes based on photometric uncertainties
     Recalculate colors from augmented magnitudes
@@ -38,15 +41,16 @@ def augment_lensed_magnitudes(df, n_augmentations=3):
         Original + augmented samples
     """
     bands = ['g', 'r', 'i', 'z', 'w1', 'w2']
-    lensed = df[df.lensed==True]
+    # lensed = df[df.lensed==True]
     
-    augmented_df = lensed.copy()  # Start with original lenses
-    augmented_df = pd.concat([augmented_df.copy() for _ in range(n_augmentations)])
+    # augmented_df = lensed_df.copy()  # Start with original lenses
+    augmented_df = pd.concat([lensed_df.copy() for _ in range(n_augmentations)], ignore_index=True)
 
     for b in util.bands:
         augmented_df['flux_sigma_'+b] = 1 / np.sqrt(augmented_df['flux_ivar_'+b])
         new_fluxes = np.random.normal(loc=augmented_df['dered_flux_'+b], scale=augmented_df['flux_sigma_'+b])
         augmented_df['dered_mag_'+b] = flux2mag(new_fluxes)
+        augmented_df['is_augmented'] = True
     
     augmented_df['g_r'] = augmented_df['dered_mag_g'] - augmented_df['dered_mag_r']
     augmented_df['r_i'] = augmented_df['dered_mag_r'] - augmented_df['dered_mag_i']
@@ -56,7 +60,7 @@ def augment_lensed_magnitudes(df, n_augmentations=3):
     augmented_df['w1_w2'] = augmented_df['dered_mag_w1'] - augmented_df['dered_mag_w2']
     
     # Concat with original
-    df_combined = pd.concat([lensed.copy(), augmented_df], ignore_index=True)
+    df_combined = pd.concat([lensed_df.copy(), augmented_df], ignore_index=True)
     
     print(f"Augmentation complete:")
     print(f"  Original samples: {len(df)}")
@@ -105,7 +109,7 @@ def add_prospector_features(df):
     
     return df
     
-def prepare_xgboost_model(df, target_col='lensed'):
+def prepare_xgboost_model(df, augment_lensed=True, n_augmentations=3):
     """
     Prepare XGBoost model - impute missing data without indicators
     """
@@ -115,6 +119,12 @@ def prepare_xgboost_model(df, target_col='lensed'):
     # unlensed_df = match_iband(unlensed_df, lensed_df)
     unlensed_df['lensed']=False
 
+    # Augment lensed galaxies if requested
+    if augment_lensed and len(lensed_df) > 0:
+        print("Augmenting lensed galaxies...")
+        lensed_df = augment_lensed_magnitudes(lensed_df, n_augmentations)
+
+    # Shuffle
     df = pd.concat([lensed_df, unlensed_df]).sample(frac=1).reset_index(drop=True)
     df = add_prospector_features(df)
 
@@ -136,11 +146,11 @@ def prepare_xgboost_model(df, target_col='lensed'):
     df = df[df[prosp_features].isnull().sum(axis=1)<2].reset_index(drop=True)
     
     # Combine all features
-    feature_cols = color_features + chi_features + prosp_features
+    feature_cols = [str(f) for f in (color_features + chi_features + prosp_features)]
     
     # Prepare data
     X = df[feature_cols].copy()
-    y = df[target_col].copy()
+    y = df['lensed'].copy()
     
     # Fix for column types
     X.columns = X.columns.astype(str)
@@ -174,10 +184,93 @@ def prepare_xgboost_model(df, target_col='lensed'):
     
     return X, y, scale_pos_weight, feature_cols
 
-def train_xgboost_model(X, y, scale_pos_weight):
+def prepare_features_from_df(df, feature_cols):
     """
-    Train XGBoost with hyperparameter tuning
+    Extract and impute features from a dataframe
+    Assumes Prospector features and chi-squared already calculated
     """
+    df.columns = df.columns.astype(str)
+    X = df[feature_cols].copy()
+    y = df['lensed'].copy().astype(int)
+
+    # Ensure all column names are strings
+    X.columns = X.columns.astype(str)
+    
+    # Remove rows with too many missing values
+    color_features = ['g_r', 'i_z', 'r_i', 'r_z', 'w1_w2', 'z_w1']
+    prosp_features = ['delta_z_frac', 'log_ssfr', 'dust', 
+                      'log_age', 'mass_unc_rel', 'dust_unc_rel']
+    
+    valid_mask = (X[color_features].isnull().sum(axis=1) < 2) & \
+                 (X[prosp_features].isnull().sum(axis=1) < 2)
+    
+    X = X[valid_mask].reset_index(drop=True)
+    y = y[valid_mask].reset_index(drop=True)
+    
+    # Impute missing values
+    X = X.rename(str,axis="columns")
+    if X.isnull().any().any():
+        imputer = KNNImputer(n_neighbors=5, weights='distance')
+        X_imputed = imputer.fit_transform(X)
+        X = pd.DataFrame(X_imputed, columns=feature_cols)
+    
+    return X, y
+
+def train_xgboost_model_with_cv(df, n_augmentations=3):
+    """
+    Train XGBoost with proper CV - augment only training folds from raw data
+    
+    Parameters:
+    -----------
+    df : DataFrame
+        Full dataset with raw flux columns
+    n_augmentations : int
+        Number of augmented copies per lensed galaxy in training
+    
+    Returns:
+    --------
+    best_model, best_params, cv_scores, feature_importance, X_all, y_all
+    """
+    
+    print("\n1. Preprocessing full dataset...")
+    
+    df.columns = df.columns.astype(str)
+
+    # Add unlensed as False since I forgot in db
+    df.loc[df.lensed!=True, 'lensed'] = False
+
+    # Add Prospector features to full dataset
+    df = add_prospector_features(df.copy())
+    
+    # Calculate chi-squared features
+    rchisq = np.array(df[util.rchisq_labels])
+    df['avg_rchisq'] = np.nanmean(rchisq, axis=1)
+    
+    dchisq = np.array(df[util.dchisq_labels])
+    df['min_dchisq'] = np.nanmin(dchisq, axis=1)
+    
+    # Define features
+    color_features = ['g_r', 'i_z', 'r_i', 'r_z', 'w1_w2', 'z_w1']
+    chi_features = ['min_dchisq', 'avg_rchisq']
+    prosp_features = ['delta_z_frac', 'log_ssfr', 'dust', 
+                      'log_age', 'mass_unc_rel', 'dust_unc_rel']
+    feature_cols = [str(f) for f in (color_features + chi_features + prosp_features)]
+    # Remove anything with more than 2 bands missing
+    df = df[df[color_features].isnull().sum(axis=1)<2].reset_index(drop=True)
+    df = df[df[prosp_features].isnull().sum(axis=1)<2].reset_index(drop=True)
+    
+    # Get clean base dataset (no augmentation yet)
+    X_base, y_base = prepare_features_from_df(df, feature_cols)
+    
+    # We need to keep track of which rows correspond to which original data
+    # So we can augment properly in each fold
+    df_clean = df.iloc[X_base.index].reset_index(drop=True)
+    X_base = X_base.reset_index(drop=True)
+    y_base = y_base.reset_index(drop=True)
+    
+    print(f"Clean dataset: {len(X_base)} samples")
+    print(f"  Lensed: {(y_base==1).sum()}")
+    print(f"  Unlensed: {(y_base==0).sum()}")
     
     # Define parameter grid
     param_grid = {
@@ -186,37 +279,166 @@ def train_xgboost_model(X, y, scale_pos_weight):
         'n_estimators': [100, 200, 300],
         'subsample': [0.8, 0.9, 1.0],
         'colsample_bytree': [0.8, 0.9, 1.0],
-        'reg_alpha': [0, 0.1, 0.5],  # L1 regularization
-        'reg_lambda': [1, 1.5, 2]   # L2 regularization
+        'reg_alpha': [0, 0.1, 0.5],
+        'reg_lambda': [1, 1.5, 2]
     }
     
-    # Base XGBoost model - REMOVED early_stopping_rounds
-    xgb_model = xgb.XGBClassifier(
+    # Stratified CV
+    outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
+    inner_cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=seed+1)
+    
+    cv_scores = []
+    all_feature_importances = []
+    
+    print("\n2. Running 5-fold cross-validation with augmentation...")
+    
+    for fold, (train_idx, test_idx) in enumerate(outer_cv.split(X_base, y_base), 1):
+        print(f"\n{'='*60}")
+        print(f"FOLD {fold}/5")
+        print(f"{'='*60}")
+        
+        # Get original dataframes for this fold (with raw flux data)
+        df_train_fold = df_clean.iloc[train_idx].copy()
+        df_test_fold = df_clean.iloc[test_idx].copy()
+        
+        # Separate lensed and unlensed in training fold
+        df_train_lensed = df_train_fold[df_train_fold.lensed == True].copy()
+        df_train_unlensed = df_train_fold[df_train_fold.lensed != True].copy()
+        
+        print(f"Train: {len(df_train_fold)} ({len(df_train_lensed)} lensed)")
+        print(f"Test:  {len(df_test_fold)} ({(df_test_fold.lensed==True).sum()} lensed)")
+        
+        # Augment lensed training data from raw fluxes
+        if len(df_train_lensed) > 0 and n_augmentations > 0:
+            print(f"Augmenting {len(df_train_lensed)} lensed samples from raw fluxes...")
+            df_train_lensed_aug = augment_lensed_from_raw(df_train_lensed, n_augmentations)
+        else:
+            df_train_lensed_aug = df_train_lensed
+        
+        # Combine augmented lensed with unlensed
+        df_train_fold_aug = pd.concat([df_train_lensed_aug, df_train_unlensed], ignore_index=True)
+        df_train_fold_aug = df_train_fold_aug.sample(frac=1, random_state=seed).reset_index(drop=True)
+        
+        print(f"Augmented training set: {len(df_train_fold_aug)} samples")
+        
+        # Extract features from augmented training data
+        X_train_aug, y_train_aug = prepare_features_from_df(df_train_fold_aug, feature_cols)
+        
+        # Extract features from test data (no augmentation)
+        X_test_fold, y_test_fold = prepare_features_from_df(df_test_fold, feature_cols)
+        
+        # Calculate scale_pos_weight for this fold
+        scale_pos_weight_fold = (y_train_aug == 0).sum() / (y_train_aug == 1).sum()
+        
+        # Hyperparameter tuning on this fold's training data
+        xgb_model = xgb.XGBClassifier(
+            objective='binary:logistic',
+            scale_pos_weight=scale_pos_weight_fold,
+            random_state=seed,
+            eval_metric='auc'
+        )
+        
+        grid_search = GridSearchCV(
+            estimator=xgb_model,
+            param_grid=param_grid,
+            scoring='roc_auc',
+            cv=inner_cv,
+            n_jobs=-1,
+            verbose=0
+        )
+        
+        grid_search.fit(X_train_aug, y_train_aug)
+        best_model_fold = grid_search.best_estimator_
+        
+        # Evaluate on ORIGINAL (non-augmented) test set
+        y_test_pred_proba = best_model_fold.predict_proba(X_test_fold)[:, 1]
+        fold_auc = roc_auc_score(y_test_fold, y_test_pred_proba)
+        cv_scores.append(fold_auc)
+        
+        print(f"Fold {fold} AUC: {fold_auc:.4f}")
+        
+        # Store feature importance
+        fold_importance = pd.DataFrame({
+            'feature': feature_cols,
+            'importance': best_model_fold.feature_importances_,
+            'fold': fold
+        })
+        all_feature_importances.append(fold_importance)
+    
+    print(f"\n{'='*60}")
+    print(f"CROSS-VALIDATION RESULTS")
+    print(f"{'='*60}")
+    print(f"Mean AUC: {np.mean(cv_scores):.4f} ± {np.std(cv_scores):.4f}")
+    print(f"Fold AUCs: {[f'{s:.4f}' for s in cv_scores]}")
+    
+    # Average feature importance across folds
+    all_importance_df = pd.concat(all_feature_importances)
+    avg_feature_importance = all_importance_df.groupby('feature')['importance'].mean().reset_index()
+    avg_feature_importance = avg_feature_importance.sort_values('importance', ascending=False)
+    
+    print(f"\nTop 10 Features (averaged across folds):")
+    print(avg_feature_importance.head(10))
+    
+    # Train final model on ALL data (with augmentation)
+    print(f"\n{'='*60}")
+    print("TRAINING FINAL MODEL ON ALL DATA")
+    print(f"{'='*60}")
+    
+    # Separate lensed and unlensed from full clean dataset
+    df_lensed_all = df_clean[df_clean.lensed == True].copy()
+    df_unlensed_all = df_clean[df_clean.lensed != True].copy()
+    
+    # Augment all lensed data
+    if len(df_lensed_all) > 0 and n_augmentations > 0:
+        print(f"Augmenting {len(df_lensed_all)} lensed samples for final model...")
+        df_lensed_all_aug = augment_lensed_from_raw(df_lensed_all, n_augmentations)
+    else:
+        df_lensed_all_aug = df_lensed_all
+    
+    # Combine
+    df_all_aug = pd.concat([df_lensed_all_aug, df_unlensed_all], ignore_index=True)
+    df_all_aug = df_all_aug.sample(frac=1, random_state=seed).reset_index(drop=True)
+    
+    # Extract features
+    X_all, y_all = prepare_features_from_df(df_all_aug, feature_cols)
+    
+    print(f"Final training set: {len(X_all)} samples")
+    
+    scale_pos_weight_all = (y_all == 0).sum() / (y_all == 1).sum()
+    
+    # Train final model with grid search
+    xgb_model_final = xgb.XGBClassifier(
         objective='binary:logistic',
-        scale_pos_weight=scale_pos_weight,
-        random_state=42,
+        scale_pos_weight=scale_pos_weight_all,
+        random_state=seed,
         eval_metric='auc'
-        # early_stopping_rounds removed - incompatible with GridSearchCV
     )
     
-    # Stratified cross-validation
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    
-    # Grid search
-    grid_search = GridSearchCV(
-        estimator=xgb_model,
+    grid_search_final = GridSearchCV(
+        estimator=xgb_model_final,
         param_grid=param_grid,
         scoring='roc_auc',
-        cv=cv,
+        cv=StratifiedKFold(n_splits=5, shuffle=True, random_state=seed),
         n_jobs=-1,
         verbose=1
     )
     
-    # Fit model
-    y = np.array(y.astype(int))
-    grid_search.fit(X, y)
+    grid_search_final.fit(X_all, y_all)
+    best_model_final = grid_search_final.best_estimator_
+    best_params = grid_search_final.best_params_
     
-    return grid_search.best_estimator_, grid_search.best_params_
+    print(f"\nBest hyperparameters:")
+    for param, value in best_params.items():
+        print(f"  {param}: {value}")
+    
+    # Final feature importance
+    final_feature_importance = pd.DataFrame({
+        'feature': feature_cols,
+        'importance': best_model_final.feature_importances_
+    }).sort_values('importance', ascending=False)
+    
+    return best_model_final, best_params, cv_scores, final_feature_importance, X_all, y_all
+
 
 def evaluate_model(model, X, y, feature_cols):
     """
@@ -254,22 +476,18 @@ def evaluate_model(model, X, y, feature_cols):
 
 def save_model_and_metrics(best_model, best_params, cv_scores, feature_importance, 
                           X, y, output_dir='./model_outputs'):
-    """
-    Save trained model, parameters, and performance metrics
-    """
+    """Save model, parameters, and all evaluation metrics"""
     import os
     os.makedirs(output_dir, exist_ok=True)
     
-    # Convert y to integer numpy array to avoid type issues
     y = np.array(y).astype(int)
-    
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     
-    # 1. Save the model
+    # 1. Save model
     model_path = f'{output_dir}/xgboost_lens_classifier_{timestamp}.pkl'
     with open(model_path, 'wb') as f:
         pickle.dump(best_model, f)
-    print(f"Model saved to: {model_path}")
+    print(f"\nModel saved to: {model_path}")
     
     # 2. Save hyperparameters
     params_path = f'{output_dir}/best_params_{timestamp}.json'
@@ -282,9 +500,9 @@ def save_model_and_metrics(best_model, best_params, cv_scores, feature_importanc
     feature_importance.to_csv(feature_importance_path, index=False)
     print(f"Feature importance saved to: {feature_importance_path}")
     
-    # 4. Save cross-validation scores
+    # 4. Save CV scores
     cv_metrics = {
-        'cv_auc_scores': [float(score) for score in cv_scores],  # Convert to float for JSON
+        'cv_auc_scores': [float(score) for score in cv_scores],
         'mean_auc': float(np.mean(cv_scores)),
         'std_auc': float(np.std(cv_scores)),
         'timestamp': timestamp
@@ -294,122 +512,64 @@ def save_model_and_metrics(best_model, best_params, cv_scores, feature_importanc
         json.dump(cv_metrics, f, indent=4)
     print(f"CV metrics saved to: {cv_path}")
     
-    # 5. Generate and save ROC curve
+    # 5. ROC curve
     y_pred_proba = best_model.predict_proba(X)[:, 1]
-    fpr, tpr, thresholds = roc_curve(y, y_pred_proba)
+    fpr, tpr, _ = roc_curve(y, y_pred_proba)
     
     plt.figure(figsize=(8, 6))
-    plt.plot(fpr, tpr, label=f'ROC Curve (AUC = {np.mean(cv_scores):.3f})')
-    plt.plot([0, 1], [0, 1], 'k--', label='Random Classifier')
+    plt.plot(fpr, tpr, label=f'ROC (AUC = {np.mean(cv_scores):.3f})')
+    plt.plot([0, 1], [0, 1], 'k--', label='Random')
     plt.xlabel('False Positive Rate')
     plt.ylabel('True Positive Rate')
-    plt.title('ROC Curve - Lens Classification')
+    plt.title('ROC Curve')
     plt.legend()
     plt.grid(True, alpha=0.3)
-    roc_path = f'{output_dir}/roc_curve_{timestamp}.png'
-    plt.savefig(roc_path, dpi=300, bbox_inches='tight')
+    plt.savefig(f'{output_dir}/roc_curve_{timestamp}.png', dpi=300, bbox_inches='tight')
     plt.close()
-    print(f"ROC curve saved to: {roc_path}")
     
-    # 6. Generate and save Precision-Recall curve
-    precision, recall, pr_thresholds = precision_recall_curve(y, y_pred_proba)
+    # 6. Precision-Recall curve
+    precision, recall, _ = precision_recall_curve(y, y_pred_proba)
     
     plt.figure(figsize=(8, 6))
-    plt.plot(recall, precision, label='Precision-Recall Curve')
+    plt.plot(recall, precision)
     plt.xlabel('Recall')
     plt.ylabel('Precision')
-    plt.title('Precision-Recall Curve - Lens Classification')
-    plt.legend()
+    plt.title('Precision-Recall Curve')
     plt.grid(True, alpha=0.3)
-    pr_path = f'{output_dir}/precision_recall_{timestamp}.png'
-    plt.savefig(pr_path, dpi=300, bbox_inches='tight')
+    plt.savefig(f'{output_dir}/precision_recall_{timestamp}.png', dpi=300, bbox_inches='tight')
     plt.close()
-    print(f"Precision-Recall curve saved to: {pr_path}")
     
-    # 7. Generate and save confusion matrix - FIXED LABELS
+    # 7. Confusion matrix
     y_pred = best_model.predict(X)
     cm = confusion_matrix(y, y_pred)
     
-    # Print the confusion matrix values for debugging
-    print(f"\nConfusion Matrix:")
-    print(f"                Predicted Unlensed  Predicted Lensed")
-    print(f"Actual Unlensed:      {cm[0,0]:6d}           {cm[0,1]:6d}")
-    print(f"Actual Lensed:        {cm[1,0]:6d}           {cm[1,1]:6d}")
-    
     plt.figure(figsize=(8, 6))
-    
-    # Add percentage annotations
     cm_percent = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis] * 100
     annot_labels = np.array([[f'{count}\n({pct:.1f}%)' 
                              for count, pct in zip(row_counts, row_pcts)]
                             for row_counts, row_pcts in zip(cm, cm_percent)])
     
     sns.heatmap(cm, annot=annot_labels, fmt='', cmap='Blues', 
-                xticklabels=['Predicted: Unlensed', 'Predicted: Lensed'],
-                yticklabels=['Actual: Unlensed', 'Actual: Lensed'],
-                cbar_kws={'label': 'Count'})
-    plt.xlabel('Predicted Class')
-    plt.ylabel('Actual Class')
-    plt.title('Confusion Matrix - Lens Classification')
-    
-    # Add text explanation
-    plt.text(0.5, -0.15, 
-             'Top-left: True Negatives | Top-right: False Positives\n' +
-             'Bottom-left: False Negatives | Bottom-right: True Positives',
-             ha='center', transform=plt.gca().transAxes, fontsize=9, style='italic')
-    
-    cm_path = f'{output_dir}/confusion_matrix_{timestamp}.png'
-    plt.savefig(cm_path, dpi=300, bbox_inches='tight')
+                xticklabels=['Unlensed', 'Lensed'],
+                yticklabels=['Unlensed', 'Lensed'])
+    plt.ylabel('Actual')
+    plt.xlabel('Predicted')
+    plt.title('Confusion Matrix')
+    plt.savefig(f'{output_dir}/confusion_matrix_{timestamp}.png', dpi=300, bbox_inches='tight')
     plt.close()
-    print(f"Confusion matrix saved to: {cm_path}")
     
-    # Calculate and print key metrics from confusion matrix
-    tn, fp, fn, tp = cm.ravel()
-    print(f"\nConfusion Matrix Breakdown:")
-    print(f"  True Negatives (correctly identified unlensed):  {tn}")
-    print(f"  False Positives (unlensed predicted as lensed):  {fp}")
-    print(f"  False Negatives (lensed predicted as unlensed):  {fn}")
-    print(f"  True Positives (correctly identified lensed):    {tp}")
-    print(f"  Accuracy: {(tp + tn) / (tp + tn + fp + fn):.3f}")
-    print(f"  Precision: {tp / (tp + fp):.3f}")
-    print(f"  Recall: {tp / (tp + fn):.3f}")
-    
-    # 8. Generate and save classification report
-    report = classification_report(y, y_pred, target_names=['Unlensed', 'Lensed'], 
-                                   output_dict=True)
-    report_path = f'{output_dir}/classification_report_{timestamp}.json'
-    with open(report_path, 'w') as f:
-        json.dump(report, f, indent=4)
-    print(f"Classification report saved to: {report_path}")
-    
-    # 9. Plot and save feature importance
+    # 8. Feature importance plot
     plt.figure(figsize=(10, 6))
     top_features = feature_importance.head(15)
     plt.barh(range(len(top_features)), top_features['importance'])
     plt.yticks(range(len(top_features)), top_features['feature'])
     plt.xlabel('Importance')
-    plt.title('Top 15 Feature Importances')
+    plt.title('Top 15 Features')
     plt.gca().invert_yaxis()
-    feat_imp_path = f'{output_dir}/feature_importance_plot_{timestamp}.png'
-    plt.savefig(feat_imp_path, dpi=300, bbox_inches='tight')
+    plt.savefig(f'{output_dir}/feature_importance_plot_{timestamp}.png', dpi=300, bbox_inches='tight')
     plt.close()
-    print(f"Feature importance plot saved to: {feat_imp_path}")
     
-    # 10. Save summary metadata
-    metadata = {
-        'timestamp': timestamp,
-        'n_samples': len(X),
-        'n_features': len(X.columns),
-        'feature_names': list(X.columns),
-        'class_distribution': {str(k): int(v) for k, v in pd.Series(y).value_counts().to_dict().items()},
-        'best_params': best_params,
-        'cv_auc_mean': float(np.mean(cv_scores)),
-        'cv_auc_std': float(np.std(cv_scores))
-    }
-    metadata_path = f'{output_dir}/model_metadata_{timestamp}.json'
-    with open(metadata_path, 'w') as f:
-        json.dump(metadata, f, indent=4)
-    print(f"Metadata saved to: {metadata_path}")
+    print(f"All outputs saved with timestamp: {timestamp}")
     
     return timestamp
 
@@ -420,6 +580,50 @@ def load_model(model_path):
     with open(model_path, 'rb') as f:
         model = pickle.load(f)
     return model
+
+def main(df, n_augmentations=3):
+    """
+    Main training pipeline with proper cross-validation
+    
+    Parameters:
+    -----------
+    df : DataFrame
+        Full dataset with raw flux columns
+    n_augmentations : int
+        Number of augmented copies per lensed galaxy
+    """
+    print("="*80)
+    print("GRAVITATIONAL LENS CLASSIFICATION")
+    print("="*80)
+    
+    # Train with proper CV (augments only training folds from raw fluxes)
+    best_model, best_params, cv_scores, feature_importance, X_all, y_all = \
+        train_xgboost_model_with_cv(df, n_augmentations)
+    
+    # Save everything
+    print("\nSaving outputs...")
+    timestamp = save_model_and_metrics(
+        best_model, best_params, cv_scores, feature_importance, X_all, y_all
+    )
+    
+    print(f"\n{'='*80}")
+    print(f"TRAINING COMPLETE!")
+    print(f"CV AUC: {np.mean(cv_scores):.4f} ± {np.std(cv_scores):.4f}")
+    print(f"Timestamp: {timestamp}")
+    print(f"{'='*80}")
+    
+    return best_model, best_params, cv_scores, feature_importance, timestamp
+
+if __name__ == "__main__":
+    # Load your data
+    engine = sa.create_engine(util.conn_string, poolclass=NullPool)
+    with engine.connect() as conn:
+        gal_tbl = sa.Table('lrg_train', sa.MetaData(), autoload_with=engine)
+        stmt = sa.select(gal_tbl)
+        df = pd.DataFrame(conn.execute(stmt))
+    
+    # Run training
+    model, params, scores, importance, timestamp = main(df, n_augmentations=3)
 
 # Usage example:
 # X, y, scale_pos_weight, feature_cols = prepare_xgboost_model(your_df)
