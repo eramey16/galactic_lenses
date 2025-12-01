@@ -1,4 +1,5 @@
 import os
+import wandb
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
@@ -6,13 +7,14 @@ from sklearn.model_selection import RepeatedStratifiedKFold
 from sklearn.metrics import classification_report, roc_auc_score, confusion_matrix
 from sklearn.metrics import roc_curve, precision_recall_curve
 from sklearn.metrics import make_scorer, precision_score, recall_score
-from sklearn.metrics import balanced_accuracy_score
+from sklearn.metrics import balanced_accuracy_score, accuracy_score
 from sklearn.impute import KNNImputer
 import xgboost as xgb
 import matplotlib.pyplot as plt
 import argparse
 import sqlalchemy as sa
 from sqlalchemy.pool import NullPool
+from sweep_config import sweep_config_XGB, best_config
 
 import db_util as util
 
@@ -58,38 +60,48 @@ def flux2mag(flux):
 # modified_precision = make_scorer(precision_at_recall, 
 #                                  needs_proba=True, min_recall=0.90)
 
+cv_funcs = {
+    'accuracy': accuracy_score,
+    'balanced_accuracy': balanced_accuracy_score,
+    'roc_auc_score': roc_auc_score,
+    'precision': precision_score,
+    'recall': recall_score,
+}
+
 class ModelTrainer:
     
-    def __init__(self, model_type, tbl_name, n_aug=3, conn_string=util.conn_string):
+    def __init__(self, model_type, model_params, 
+                 tbl_name, n_aug=3, conn_string=util.conn_string):
         self.seed = 42
         self.engine = sa.create_engine(util.conn_string, poolclass=NullPool)
         self.tbl_name = tbl_name
         self.model_type=model_type
         self.n_aug=n_aug
+        self.model_params = model_params
 
         self.data = None
         if model_type=='XGB':
             self.model = xgb.XGBClassifier
-            self.model_params = {
-                'objective':'binary:logistic',
-                'scale_pos_weight':None,
-                'random_state':self.seed,
-                'eval_metric':'auc',
-                'n_jobs': -1,
-                'tree_method': 'hist',
-                'device': 'cuda',
-            }
+            # self.model_params = {
+            #     'objective':'binary:logistic',
+            #     'scale_pos_weight':None,
+            #     'random_state':self.seed,
+            #     'eval_metric':'auc',
+            #     'n_jobs': -1,
+            #     'tree_method': 'hist',
+            #     'device': 'cuda',
+            # }
         elif model_type=='RF':
             self.model = RandomForestClassifier
-            self.model_params = {
-                'n_estimators': np.arange(50, 550, 50),
-                'max_depth': np.arange(3, 21, 2),
-                'max_samples': np.arange(0.7, 1.1, .1),
-                'criterion': ('gini', 'entropy'),
-                'max_features': ('sqrt', 'log2'),
-                'random_state': [self.seed],
-                'class_weight': ['balanced'],
-            }
+            # self.model_params = {
+            #     'n_estimators': np.arange(50, 550, 50),
+            #     'max_depth': np.arange(3, 21, 2),
+            #     'max_samples': np.arange(0.7, 1.1, .1),
+            #     'criterion': ('gini', 'entropy'),
+            #     'max_features': ('sqrt', 'log2'),
+            #     'random_state': [self.seed],
+            #     'class_weight': ['balanced'],
+            # }
     
     def _load_data(self):
         print("Loading data...")
@@ -225,19 +237,15 @@ class ModelTrainer:
         X, y = self.data[feature_cols], self.data['lensed']
         y = pd.Series(np.array(y).astype(int), name='lensed') # Formatting
 
-        cv_scores = {'precision': [], 
-                     'recall': [],
-                     'balanced_accuracy': [],
-                     'roc_auc': []
-                    }
+        cv_scores = {key:list() for key in cv_funcs}
 
-        kf = RepeatedStratifiedKFold(n_splits=5, n_repeats=3, random_state=self.seed)
+        self.all_y_true, self.all_y_proba, self.all_y_pred = [], [], []
+
+        kf = RepeatedStratifiedKFold(n_splits=5, n_repeats=5, random_state=self.seed)
         for i, (train_index, val_index) in enumerate(kf.split(X, y)):
             # Training-validation split
             X_train, X_val = X.iloc[train_index], X.iloc[val_index]
             y_train, y_val = y.iloc[train_index], y.iloc[val_index]
-            self.model_params['scale_pos_weight'] = (len(y_train[
-                y_train.astype(bool)!=True]) / len(y_train))
             
             if self.n_aug > 1:
                 aug_train = augmented_df[augmented_df.aug_idx.isin(train_index)]
@@ -245,6 +253,10 @@ class ModelTrainer:
 
                 X_train = pd.concat([X_train, X_aug]).reset_index(drop=True)
                 y_train = pd.concat([y_train, y_aug]).reset_index(drop=True)
+            
+
+            self.model_params['scale_pos_weight'] = (len(y_train[
+                y_train.astype(bool)!=True]) / len(y_train))
 
             y_train, y_val = np.array(y_train).astype(int), np.array(y_val).astype(int)
 
@@ -252,15 +264,82 @@ class ModelTrainer:
             self.trained_model.fit(X_train, y_train)
 
             y_pred = self.trained_model.predict(X_val)
-            cv_scores['precision'].append(precision_score(y_val, y_pred))
-            cv_scores['balanced_accuracy'].append(
-                balanced_accuracy_score(y_val, y_pred))
-            cv_scores['recall'].append(recall_score(y_val, y_pred))
-            cv_scores['roc_auc'].append(roc_auc_score(y_val, y_pred))
+            y_pred_proba = self.trained_model.predict_proba(X_val)[:,1]
+            for key in cv_funcs:
+                cv_scores[key].append(cv_funcs[key](y_val, y_pred))
+            
+            self.all_y_true.extend(y_val)
+            self.all_y_pred.extend(y_pred)
+            self.all_y_proba.extend(y_pred_proba)
         
         for key in cv_scores:
             print(f"\nMean {key} score: {np.mean(cv_scores[key]):.4f} ± {np.std(cv_scores[key]):.4f}")
         return cv_scores
+
+def train_one_config():
+    run = wandb.init()
+    config = wandb.config
+
+    this_config = dict(config)
+    n_aug = this_config.pop('n_aug')
+    model_t = ModelTrainer(
+        model_type='XGB',
+        model_params=this_config,
+        tbl_name='lrg_train',
+        n_aug=n_aug
+    )
+    model_t.prepare_data()
+    cv_scores = model_t.train_model()
+
+    for key in cv_scores:
+        wandb.log({f"cv_mean_{key}": np.mean(cv_scores[key]),
+                   f"cv_std_{key}": np.std(cv_scores[key])})
+    
+    if hasattr(model_t.trained_model, 'feature_importances_'):
+        importance_df = pd.DataFrame({
+            'feature': feature_cols,
+            'importance': model_t.trained_model.feature_importances_
+        }).sort_values('importance', ascending=False)
+        
+        # Log as table
+        wandb.log({'feature_importance': wandb.Table(dataframe=importance_df)})
+        
+        # Log as bar chart
+        wandb.log({'feature_importance_plot': wandb.plot.bar(
+            wandb.Table(dataframe=importance_df),
+            'feature', 'importance',
+            title='Feature Importance'
+        )})
+    
+    # After CV loop:
+    [tn, fp], [fn, tp] = confusion_matrix(model_t.all_y_true, model_t.all_y_pred)
+    wandb.log({'confusion_matrix': wandb.plot.confusion_matrix(
+        probs=None,
+        y_true=model_t.all_y_true,
+        preds=model_t.all_y_pred,
+        class_names=['Not lensed', 'Lensed']
+    )})
+    
+    lensed_acc = tp / (tp + fn)
+    unlensed_acc = tn / (tn + fp)
+
+    wandb.log({"lensed_accuracy": lensed_acc,
+               "unlensed_accuracy": unlensed_acc})
+
+    # Precision-Recall Curve
+    # precision, recall, _ = precision_recall_curve(all_y_true, all_y_proba)
+    # pr_auc = auc(recall, precision)
+
+    # wandb.log({
+    #     'pr_curve': wandb.plot.line_series(
+    #         xs=recall,
+    #         ys=[precision],
+    #         keys=['PR'],
+    #         title=f'Precision-Recall Curve (AUC={pr_auc:.3f})',
+    #         xname='Recall',
+    #         yname='Precision'
+    #     )
+    # })
 
 
 if __name__=='__main__':
@@ -272,8 +351,22 @@ if __name__=='__main__':
                         help="DB table name to use for training")
     parser.add_argument('--n_aug', '-n', default=3, type=int,
                         help='Number of augmentations for lensed data')
+    parser.add_argument('--sweep', action='store_true',
+                        help='Run WandB sweep instead of single training')
+    parser.add_argument('--project_name', type=str, help="Project name on W&B")
     args = parser.parse_args()
 
-    model_t = ModelTrainer(**vars(args))
-    model_t.prepare_data()
-    cv_scores = model_t.train_model()
+    if args.sweep:
+        if args.model_type=='XGB': config = sweep_config_XGB
+        elif args.model_type=='RF': raise NotImplementedError("Add RF Model")
+        sweep_id = wandb.sweep(
+            sweep_config_XGB, 
+            project=args.project_name if args.project_name is not None \
+                     else f'lens_classification_{args.model}')
+        # Run sweep
+        wandb.agent(sweep_id, function=train_one_config, count=100)
+    else:
+        raise NotImplementedError("Need to find best config")
+        model_t = ModelTrainer(**vars(args), model_config=best_config)
+        model_t.prepare_data()
+        cv_scores = model_t.train_model()
