@@ -255,10 +255,12 @@ class ModelTrainer:
                 y_train = pd.concat([y_train, y_aug]).reset_index(drop=True)
             
 
-            self.model_params['scale_pos_weight'] = (len(y_train[
-                y_train.astype(bool)!=True]) / len(y_train))
+            # self.model_params['scale_pos_weight'] = (len(y_train[
+            #     y_train.astype(bool)==True]) / len(y_train))
 
             y_train, y_val = np.array(y_train).astype(int), np.array(y_val).astype(int)
+
+            self.model_params['scale_pos_weight'] = (y_train==0).sum() / (y_train==1).sum()
 
             self.trained_model = self.model(**self.model_params)
             self.trained_model.fit(X_train, y_train)
