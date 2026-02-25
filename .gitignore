@@ -12,6 +12,9 @@ __pycache__/
 *.json
 *.dat
 *.csv
+*.wandb
+requirements.txt
+config*.yaml
 
 # Distribution / packaging
 .Python
