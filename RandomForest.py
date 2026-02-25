@@ -34,7 +34,7 @@ parameters = {
     'criterion': ('gini', 'entropy'),
     'max_features': ('sqrt', 'log2'),
     'random_state': [seed],
-    'class_weight': ['balanced'],
+    'class_weight': ['balanced', 'balanced_subsample'],
 }
 
 ### Main function

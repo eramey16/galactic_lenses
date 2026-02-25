@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import argparse
 import sqlalchemy as sa
 from sqlalchemy.pool import NullPool
-from sweep_config import sweep_config_XGB, best_config
+from sweep_config import sweep_config_XGB, sweep_config_RF
 
 import db_util as util
 
@@ -24,7 +24,7 @@ color_features = ['g_r', 'i_z', 'r_i', 'r_z', 'w1_w2', 'z_w1']
 chi_features = ['min_dchisq', 'avg_rchisq']
 prosp_features = ['delta_z_frac', 'log_ssfr', 'dust', 
                 'log_age', 'mass_unc_rel', 'dust_unc_rel',
-                'mass_unc_asym', 'dust_unc_asym'
+                # 'mass_unc_asym', 'dust_unc_asym'
                 ]
 
 feature_cols = color_features + chi_features + prosp_features
@@ -161,12 +161,12 @@ class ModelTrainer:
                                                                 (df['dust'] + 1e-10))
         
         # Asymmetric uncertainty indicators (poor fit quality)
-        df['mass_unc_asym'] = (np.abs(df['mass_sig_plus'] - df['mass_sig_minus']) / 
-                               (np.abs(df['mass_sig_plus']) + np.abs(df['mass_sig_minus']) + 1e-10))
+        # df['mass_unc_asym'] = (np.abs(df['mass_sig_plus'] - df['mass_sig_minus']) / 
+        #                        (np.abs(df['mass_sig_plus']) + np.abs(df['mass_sig_minus']) + 1e-10))
         # df['age_unc_asym'] = (np.abs(df['age_unc_pos'] - df['age_unc_neg']) / 
         #                       (np.abs(df['age_unc_pos']) + np.abs(df['age_unc_neg']) + 1e-10))
-        df['dust_unc_asym'] = (np.abs(df['dust_sig_plus'] - df['dust_sig_minus']) / 
-                               (np.abs(df['dust_sig_plus']) + np.abs(df['dust_sig_minus']) + 1e-10))
+        # df['dust_unc_asym'] = (np.abs(df['dust_sig_plus'] - df['dust_sig_minus']) / 
+        #                        (np.abs(df['dust_sig_plus']) + np.abs(df['dust_sig_minus']) + 1e-10))
     
     def _augment_data(self, df):
         print("Augmenting data...")
@@ -237,6 +237,8 @@ class ModelTrainer:
         X, y = self.data[feature_cols], self.data['lensed']
         y = pd.Series(np.array(y).astype(int), name='lensed') # Formatting
 
+        original_scale_pos_weight = (y == 0).sum() / (y == 1).sum()
+
         cv_scores = {key:list() for key in cv_funcs}
 
         self.all_y_true, self.all_y_proba, self.all_y_pred = [], [], []
@@ -247,6 +249,7 @@ class ModelTrainer:
             X_train, X_val = X.iloc[train_index], X.iloc[val_index]
             y_train, y_val = y.iloc[train_index], y.iloc[val_index]
             
+            # Augment data, if needed
             if self.n_aug > 1:
                 aug_train = augmented_df[augmented_df.aug_idx.isin(train_index)]
                 X_aug, y_aug = aug_train[feature_cols], aug_train['lensed']
@@ -257,10 +260,11 @@ class ModelTrainer:
 
             # self.model_params['scale_pos_weight'] = (len(y_train[
             #     y_train.astype(bool)==True]) / len(y_train))
+            # self.model_params['scale_pos_weight'] = (y_train==0).sum() / (y_train==1).sum()
+            if self.model_type=='XGB':
+                self.model_params['scale_pos_weight'] = original_scale_pos_weight
 
             y_train, y_val = np.array(y_train).astype(int), np.array(y_val).astype(int)
-
-            self.model_params['scale_pos_weight'] = (y_train==0).sum() / (y_train==1).sum()
 
             self.trained_model = self.model(**self.model_params)
             self.trained_model.fit(X_train, y_train)
@@ -283,11 +287,13 @@ def train_one_config():
     config = wandb.config
 
     this_config = dict(config)
+    model_type = this_config.pop('model_type')
+    tbl_name = this_config.pop('tbl_name')
     n_aug = this_config.pop('n_aug')
     model_t = ModelTrainer(
-        model_type='XGB',
+        model_type=model_type,
         model_params=this_config,
-        tbl_name='lrg_train',
+        tbl_name=tbl_name,
         n_aug=n_aug
     )
     model_t.prepare_data()
@@ -355,18 +361,23 @@ if __name__=='__main__':
                         help='Number of augmentations for lensed data')
     parser.add_argument('--sweep', action='store_true',
                         help='Run WandB sweep instead of single training')
+    parser.add_argument('--nruns', type=int, help="Number of sweep runs to perform")
     parser.add_argument('--project_name', type=str, help="Project name on W&B")
     args = parser.parse_args()
 
     if args.sweep:
         if args.model_type=='XGB': config = sweep_config_XGB
-        elif args.model_type=='RF': raise NotImplementedError("Add RF Model")
+        elif args.model_type=='RF': config = sweep_config_RF
+
+        config['parameters']['model_type'] = {'value': args.model_type}
+        config['parameters']['tbl_name'] = {'value': args.tbl_name}
+
         sweep_id = wandb.sweep(
-            sweep_config_XGB, 
+            config, 
             project=args.project_name if args.project_name is not None \
                      else f'lens_classification_{args.model}')
         # Run sweep
-        wandb.agent(sweep_id, function=train_one_config, count=100)
+        wandb.agent(sweep_id, function=train_one_config, count=args.nruns)
     else:
         raise NotImplementedError("Need to find best config")
         model_t = ModelTrainer(**vars(args), model_config=best_config)
