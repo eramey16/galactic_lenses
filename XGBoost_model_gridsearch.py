@@ -2,6 +2,7 @@ import sys
 import pandas as pd
 import numpy as np
 import xgboost as xgb
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 import db_util as util
 from sklearn.model_selection import StratifiedKFold, GridSearchCV
@@ -105,7 +106,7 @@ def add_prospector_features(df):
     
     return df
     
-def prepare_xgboost_model(df, target_col='lensed'):
+def prepare_model(df, target_col='lensed'):
     """
     Prepare XGBoost model - impute missing data without indicators
     """
@@ -175,49 +176,139 @@ def prepare_xgboost_model(df, target_col='lensed'):
     
     return X, y, scale_pos_weight, feature_cols
 
-def train_xgboost_model(X, y, scale_pos_weight):
+# --- Keep all your existing functions unchanged ---
+# flux2mag, augment_lensed_magnitudes, add_prospector_features, 
+# prepare_xgboost_model, evaluate_model, save_model_and_metrics,
+# load_model are all unchanged
+
+def train_model_gridsearch(X, y, scale_pos_weight, model_type='XGB'):
     """
-    Train XGBoost with hyperparameter tuning
+    Train XGBoost or RandomForest with grid search hyperparameter tuning.
+    
+    Parameters:
+    -----------
+    X : DataFrame
+        Feature matrix
+    y : Series
+        Target labels
+    scale_pos_weight : float
+        Class imbalance weight (unlensed/lensed ratio)
+    model_type : str
+        'XGB' or 'RF'
+    
+    Returns:
+    --------
+    best_estimator : trained model
+    best_params : dict of best hyperparameters
     """
     
-    # Define parameter grid
-    param_grid = {
-        'max_depth': [3, 4, 5, 6],
-        'learning_rate': [0.05, 0.1, 0.15],
-        'n_estimators': [100, 200, 300],
-        'subsample': [0.8, 0.9, 1.0],
-        'colsample_bytree': [0.8, 0.9, 1.0],
-        'reg_alpha': [0, 0.1, 0.5],  # L1 regularization
-        'reg_lambda': [1, 1.5, 2]   # L2 regularization
-    }
+    y = np.array(y.astype(int))
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
     
-    # Base XGBoost model - REMOVED early_stopping_rounds
-    xgb_model = xgb.XGBClassifier(
-        objective='binary:logistic',
-        scale_pos_weight=scale_pos_weight,
-        random_state=42,
-        eval_metric='auc'
-        # early_stopping_rounds removed - incompatible with GridSearchCV
-    )
+    if model_type == 'XGB':
+        base_model = xgb.XGBClassifier(
+            objective='binary:logistic',
+            scale_pos_weight=scale_pos_weight,
+            random_state=seed,
+            eval_metric='auc',
+            n_jobs=-1,
+        )
+        param_grid = {
+            'max_depth': [3, 4, 5, 6],
+            'learning_rate': [0.05, 0.1, 0.15],
+            'n_estimators': [100, 200, 300],
+            'subsample': [0.8, 0.9, 1.0],
+            'colsample_bytree': [0.8, 0.9, 1.0],
+            'reg_alpha': [0, 0.1, 0.5],
+            'reg_lambda': [1, 1.5, 2],
+        }
+        
+    elif model_type == 'RF':
+        base_model = RandomForestClassifier(
+            random_state=seed,
+            class_weight={0: 1, 1: scale_pos_weight},  # Equivalent to scale_pos_weight
+            n_jobs=-1,
+        )
+        param_grid = {
+            'n_estimators': [100, 200, 300, 500],
+            'max_depth': [3, 5, 8, 10, None],       # None = fully grown trees
+            'min_samples_split': [2, 5, 10],         # Min samples to split a node
+            'min_samples_leaf': [1, 2, 4],           # Min samples at leaf node
+            'max_features': ['sqrt', 'log2', 0.5],   # Features to consider per split
+            'max_samples': [0.7, 0.8, 0.9, None],    # Bootstrap sample size
+            # 'class_weight': ['balanced_subsample', {0: 1, 1: scale_pos_weight}]
+        }
+    else:
+        raise ValueError(f"Unknown model_type '{model_type}'. Choose 'XGB' or 'RF'.")
     
-    # Stratified cross-validation
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    
-    # Grid search
     grid_search = GridSearchCV(
-        estimator=xgb_model,
+        estimator=base_model,
         param_grid=param_grid,
         scoring='roc_auc',
         cv=cv,
         n_jobs=-1,
-        verbose=1
+        verbose=1,
+        refit=True,  # Refit best model on full dataset
     )
     
-    # Fit model
-    y = np.array(y.astype(int))
     grid_search.fit(X, y)
     
+    print(f"\nBest {model_type} parameters:")
+    for k, v in grid_search.best_params_.items():
+        print(f"  {k}: {v}")
+    print(f"Best CV AUC: {grid_search.best_score_:.4f}")
+    
     return grid_search.best_estimator_, grid_search.best_params_
+
+
+def train_with_best_params(X, y, scale_pos_weight, best_params, model_type='XGB'):
+    """
+    Train XGBoost or RandomForest with known best parameters, no grid search.
+    
+    Parameters:
+    -----------
+    X : DataFrame
+        Feature matrix
+    y : Series
+        Target labels
+    scale_pos_weight : float
+        Class imbalance weight
+    best_params : dict
+        Known best hyperparameters
+    model_type : str
+        'XGB' or 'RF'
+    
+    Returns:
+    --------
+    model : trained model
+    best_params : dict
+    """
+    
+    y = np.array(y.astype(int))
+    
+    if model_type == 'XGB':
+        model = xgb.XGBClassifier(
+            objective='binary:logistic',
+            scale_pos_weight=scale_pos_weight,
+            random_state=seed,
+            eval_metric='auc',
+            n_jobs=-1,
+            **best_params
+        )
+    elif model_type == 'RF':
+        model = RandomForestClassifier(
+            random_state=seed,
+            class_weight={0: 1, 1: scale_pos_weight},
+            n_jobs=-1,
+            **best_params
+        )
+    else:
+        raise ValueError(f"Unknown model_type '{model_type}'. Choose 'XGB' or 'RF'.")
+    
+    model.fit(X, y)
+    
+    return model, best_params
+
 
 def evaluate_model(model, X, y, feature_cols):
     """
@@ -267,7 +358,7 @@ def save_model_and_metrics(best_model, best_params, cv_scores, feature_importanc
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     
     # 1. Save the model
-    model_path = f'{output_dir}/xgboost_lens_classifier_{timestamp}.pkl'
+    model_path = f'{output_dir}/lens_classifier_{timestamp}.pkl'
     with open(model_path, 'wb') as f:
         pickle.dump(best_model, f)
     print(f"Model saved to: {model_path}")
@@ -422,25 +513,8 @@ def load_model(model_path):
         model = pickle.load(f)
     return model
 
-def train_with_best_params(X, y, scale_pos_weight, best_params):
-    """
-    Train XGBoost with known best parameters, no grid search
-    """
-    model = xgb.XGBClassifier(
-        objective='binary:logistic',
-        scale_pos_weight=scale_pos_weight,
-        random_state=42,
-        eval_metric='auc',
-        **best_params  # Unpack best params directly
-    )
-    
-    y = np.array(y.astype(int))
-    model.fit(X, y)
-    
-    return model, best_params
-
-# Usage:
-best_params = {
+# Best params for each model type
+xgb_best_params = {
     "colsample_bytree": 1.0,
     "learning_rate": 0.05,
     "max_depth": 6,
@@ -449,6 +523,8 @@ best_params = {
     "reg_lambda": 2,
     "subsample": 0.9
 }
+
+rf_best_params = {}  # Fill in after running grid search
 
 # Usage example:
 # X, y, scale_pos_weight, feature_cols = prepare_xgboost_model(your_df)
