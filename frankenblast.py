@@ -72,7 +72,7 @@ import pandas as pd
 from astropy.coordinates import SkyCoord
 import astropy.units as u
 
-from classes import Host, Filter
+from classes import Transient, Host, Filter
 from fit_host_sed import fit_host
 from mwebv_host import get_mwebv
 from get_host_images import survey_list
@@ -94,10 +94,6 @@ SBIPP_ROOT       = os.environ.get("SBIPP_ROOT")
 SBIPP_PHOT_ROOT  = os.environ.get("SBIPP_PHOT_ROOT")
 SED_OUTPUT_ROOT  = os.environ.get("SED_OUTPUT_ROOT", "./data/sed_output")
 SURVEY_METADATA  = "/home/jovyan/frankenblast-host/data/survey_frankenblast_metadata.yml"
-
-survey_list(SURVEY_METADATA)
-
-print('Printing filters:\n', [x.name for x in Filter.all()])
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -168,49 +164,28 @@ def run_single(
     name,
     ra,
     dec,
-    flux_g,  ivar_g,
-    flux_r,  ivar_r,
-    flux_i,  ivar_i,
-    flux_z,  ivar_z,
-    flux_w1, ivar_w1,
-    flux_w2, ivar_w2,
     redshift=None,
     mwebv=None,
     all_filters=None,
+    download_cutouts=True,
 ):
     """
-    Fit a single galaxy with DESI photometry using FrankenBlast SBI++.
-
-    Parameters
-    ----------
-    name : str
-        Galaxy identifier (used for output filenames).
-    ra, dec : float
-        Galaxy coordinates in degrees (ICRS).
-    flux_g/r/i/z/w1/w2 : float
-        DESI fluxes in nanomaggies.
-    ivar_g/r/i/z/w1/w2 : float
-        DESI inverse variances in nanomaggies^-2.
-    redshift : float or None
-        Spectroscopic redshift. If None, photo-z mode is used.
-    mwebv : float or None
-        Milky Way E(B-V). If None, looked up automatically from SFD maps.
-    all_filters : list or None
-        Pre-loaded Filter.all() list (pass to avoid reloading for each galaxy).
-
-    Returns
-    -------
-    dict or None
-        Summary results dict, or None if the fit failed.
+    Run the full FrankenBlast pipeline for a single galaxy with known coordinates,
+    skipping only the host association (prost) step.
     """
+    from get_host_images import download_and_save_cutouts, get_cutouts
+    from create_apertures import construct_aperture
+    from do_photometry import do_global_photometry
+
     prev_dir = os.getcwd()
     os.chdir(franken_root)
+
     print(f"\n{'='*60}")
     print(f"Fitting: {name}  (ra={ra:.4f}, dec={dec:.4f}, z={redshift})")
     print(f"{'='*60}")
 
-    # Load filters once if not provided
     if all_filters is None:
+        survey_list(SURVEY_METADATA)
         all_filters = Filter.all()
 
     # MW dust
@@ -219,17 +194,7 @@ def run_single(
         mwebv = get_mwebv_from_coords(ra, dec)
     print(f"MW E(B-V) = {mwebv:.4f}")
 
-    # Pack raw inputs for easy lookup
-    raw_phot = {
-        "flux_g":  (flux_g,  ivar_g),
-        "flux_r":  (flux_r,  ivar_r),
-        "flux_i":  (flux_i,  ivar_i),
-        "flux_z":  (flux_z,  ivar_z),
-        "flux_w1": (flux_w1, ivar_w1),
-        "flux_w2": (flux_w2, ivar_w2),
-    }
-
-    # Build Host
+    # ── Build host & container ────────────────────────────────────────────────
     host = Host(
         name=name,
         redshift=redshift,
@@ -241,60 +206,70 @@ def run_single(
         milkyway_dust_reddening=mwebv,
         coordinates=SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs"),
     )
+    
+    galaxy = Transient(
+        name=name,
+        coordinates=SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs"),
+        transient_redshift=redshift,
+        milkyway_dust_reddening=mwebv,
+    )
+    galaxy.host = host
 
-    # Build container object
-    class GalaxyContainer:
-        pass
+    # ── Download cutout images ────────────────────────────────────────────────
+    if download_cutouts:
+        print("Downloading cutout images...")
+        download_and_save_cutouts(galaxy, filters=Filter.all())
+    else:
+        print("Skipping download, loading existing cutouts...")
 
-    galaxy              = GalaxyContainer()
-    galaxy.name         = name
-    galaxy.host         = host
-    galaxy.global_apertures = None
+    # ── Aperture photometry ───────────────────────────────────────────────────
+    cutouts = galaxy.cutouts  # populated by download_and_save_cutouts
+    global_apertures = []
 
-    # Build photometry arrays
+    print("Constructing apertures and doing photometry...")
+    for cutout in cutouts:
+        aperture = construct_aperture(cutout, galaxy.host.coordinates)
+        global_apertures.append(aperture)
+
+    galaxy.global_apertures = global_apertures
+
+    all_phot = []
+    for i in np.arange(0, len(cutouts), 1):
+        filt = cutouts[i]['filter']
+        apr  = galaxy.global_apertures[i]
+        phot = do_global_photometry(
+            galaxy, filter=filt, aperture=apr,
+            fwhm_correction=False, show_plot=False,  # set True to inspect apertures
+        )
+        all_phot.append(phot)
+
+    galaxy.host_photometry = all_phot
+
+    # ── Clean photometry (same as notebook) ──────────────────────────────────
+    phot_filters = np.array([cutout['filter'].name for cutout in cutouts])
+
     available_filters = []
-    phot_list = []
-
-    for flux_key, ivar_key, filter_name in DESI_FILTER_MAP:
-        flux_nano, ivar_nano = raw_phot[flux_key]
-
-        # Skip missing or invalid values
-        if flux_nano is None or ivar_nano is None:
-            print(f"  Skipping {filter_name}: missing value")
-            continue
-        if not np.isfinite(flux_nano) or not np.isfinite(ivar_nano):
-            print(f"  Skipping {filter_name}: non-finite value")
-            continue
-        if ivar_nano <= 0:
-            print(f"  Skipping {filter_name}: ivar <= 0")
-            continue
-
-        flux, flux_err = nano_to_maggies(flux_nano, ivar_nano)
-
-        if flux <= 0:
-            print(f"  Skipping {filter_name}: non-detection (flux={flux:.3e})")
-            continue
-
-        filter_obj = next((f for f in all_filters if f.name == filter_name), None)
-        if filter_obj is None:
-            print(f"  WARNING: '{filter_name}' not in survey metadata — skipping")
-            continue
-
-        available_filters.append({"filter": filter_obj})
-        phot_list.append({"flux": flux, "flux_error": flux_err})
-        print(f"  {filter_name:12s}: flux={flux:.3e}, err={flux_err:.3e} maggies")
-
-    if len(phot_list) == 0:
-        print(f"  ERROR: No valid photometry for {name} — skipping fit.")
-        return None
+    update_phot = []
+    for filtername in phot_filters:
+        filter_obj = next((f for f in all_filters if f.name == filtername), None)
+        if filter_obj:
+            phot_flux = np.array(galaxy.host_photometry)[
+                np.where(phot_filters == filtername)][0]['flux']
+            phot_err  = np.array(galaxy.host_photometry)[
+                np.where(phot_filters == filtername)][0]['flux_error']
+            if phot_flux is not None and phot_flux > 0:
+                available_filters.append({"filter": filter_obj})
+                update_phot.append(
+                    np.array(galaxy.host_photometry)[
+                        np.where(phot_filters == filtername)][0]
+                )
 
     galaxy.host_phot_filters = np.array(available_filters)
-    galaxy.host_photometry   = np.array(phot_list)
+    galaxy.host_photometry   = np.array(update_phot)
 
-    # SBI++ parameters
+    # ── SED fit ───────────────────────────────────────────────────────────────
     sbi_params, train_fname = _build_sbi_params(redshift)
 
-    # Run fit
     try:
         start = time.time()
         fit_host(
@@ -309,55 +284,30 @@ def run_single(
             save=True,
         )
         elapsed = (time.time() - start) / 60
-        print(f"  Fit completed in {elapsed:.2f} min")
+        print(f"Fit completed in {elapsed:.2f} min")
     except Exception as e:
-        print(f"  ERROR during fit for {name}: {e}")
+        print(f"ERROR during fit for {name}: {e}")
         traceback.print_exc()
         return None
 
-    # Load and return results
-    results = _load_results(name)
-    if results:
-        print(f"  log M* = {results['mass_p50']:.2f} [{results['mass_p16']:.2f}, {results['mass_p84']:.2f}]")
-        print(f"  SFR    = {results['sfr_p50']:.3f}  [{results['sfr_p16']:.3f}, {results['sfr_p84']:.3f}] Msun/yr")
+    res = _load_results(name)
 
     os.chdir(prev_dir)
-    return results
+
+    return res
 
 
 # ── DataFrame batch runner ────────────────────────────────────────────────────
 
-def run_from_dataframe(df, skip_existing=True):
+def run_from_dataframe(df, skip_existing=True, download_cutouts=True):
     """
-    Run SED fits for all galaxies in a DataFrame.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Must contain columns: name, ra, dec, flux_g, ivar_g, flux_r, ivar_r,
-        flux_i, ivar_i, flux_z, ivar_z, flux_w1, ivar_w1, flux_w2, ivar_w2.
-        Optional columns: redshift, mwebv.
-    skip_existing : bool
-        If True, skip galaxies that already have a .npy output file.
-
-    Returns
-    -------
-    pd.DataFrame
-        Summary results for all successfully fitted galaxies.
+    Run full FrankenBlast pipeline for all galaxies in a DataFrame.
+    Only needs: name, ra, dec, and optionally redshift, mwebv.
     """
-    required_cols = [
-        "name", "ra", "dec",
-        "flux_g", "ivar_g", "flux_r", "ivar_r",
-        "flux_i", "ivar_i", "flux_z", "ivar_z",
-        "flux_w1", "ivar_w1", "flux_w2", "ivar_w2",
-    ]
+    required_cols = ["name", "ra", "dec"]
     missing = [c for c in required_cols if c not in df.columns]
     if missing:
         raise ValueError(f"DataFrame is missing required columns: {missing}")
-
-    # Load filters once for the whole batch
-    all_filters = Filter.all()
-    print([f.name for f in all_filters])
 
     results_list = []
     n = len(df)
@@ -366,29 +316,27 @@ def run_from_dataframe(df, skip_existing=True):
         name = str(row["name"])
         print(f"\n[{idx+1}/{n}] {name}")
 
-        # Skip if output already exists
         if skip_existing:
             npy_path = os.path.join(SED_OUTPUT_ROOT, name, f"{name}_global.npy")
             if os.path.exists(npy_path):
-                print(f"  Output already exists — skipping. (set skip_existing=False to refit)")
+                print(f"  Output already exists — skipping.")
                 existing = _load_results(name)
                 if existing:
                     results_list.append(existing)
                 continue
 
-        result = run_single(
-            name    = name,
-            ra      = float(row["ra"]),
-            dec     = float(row["dec"]),
+        # Check if cutouts already downloaded
+        cutout_dir = os.path.join("./cutouts", name)
+        already_downloaded = os.path.exists(cutout_dir) and len(os.listdir(cutout_dir)) > 0
+
+        result = run_single_with_photometry(
+            name     = name,
+            ra       = float(row["ra"]),
+            dec      = float(row["dec"]),
             redshift = float(row["redshift"]) if "redshift" in df.columns and pd.notna(row.get("redshift")) else None,
             mwebv    = float(row["mwebv"])    if "mwebv"    in df.columns and pd.notna(row.get("mwebv"))    else None,
-            flux_g  = float(row["flux_g"]),   ivar_g  = float(row["ivar_g"]),
-            flux_r  = float(row["flux_r"]),   ivar_r  = float(row["ivar_r"]),
-            flux_i  = float(row["flux_i"]),   ivar_i  = float(row["ivar_i"]),
-            flux_z  = float(row["flux_z"]),   ivar_z  = float(row["ivar_z"]),
-            flux_w1 = float(row["flux_w1"]),  ivar_w1 = float(row["ivar_w1"]),
-            flux_w2 = float(row["flux_w2"]),  ivar_w2 = float(row["ivar_w2"]),
-            all_filters = all_filters,
+            all_filters     = ALL_FILTERS,
+            download_cutouts = not already_downloaded,  # skip if already have images
         )
 
         if result:
