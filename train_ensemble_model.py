@@ -5,9 +5,9 @@ import argparse
 
 import sqlalchemy as sa
 from sqlalchemy.pool import NullPool
-from XGBoost_model_gridsearch import (
+from ensemble_model_gridsearch import (
     xgb_best_params, rf_best_params,
-    prepare_xgboost_model,
+    prepare_model,
     train_model_gridsearch,
     train_with_best_params,
     evaluate_model,
