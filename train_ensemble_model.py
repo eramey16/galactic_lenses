@@ -2,6 +2,8 @@ import pandas as pd
 import numpy as np
 import db_util as util
 import argparse
+import warnings
+warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
 
 import sqlalchemy as sa
 from sqlalchemy.pool import NullPool
@@ -24,7 +26,7 @@ def main(model_type='XGB', use_grid_search=True):
         gal_data = pd.DataFrame(conn.execute(stmt))
     
     # Prepare features
-    X, y, scale_pos_weight, feature_cols = prepare_model(gal_data)
+    X, y, augmented_X, scale_pos_weight, feature_cols = prepare_model(gal_data)
     
     # Train model
     if use_grid_search:
@@ -40,13 +42,13 @@ def main(model_type='XGB', use_grid_search=True):
         )
     
     # Evaluate
-    cv_scores, feature_importance = evaluate_model(best_model, X, y, feature_cols)
+    cv_scores, feature_importance = evaluate_model(best_model, X, y, feature_cols, augmented_X)
     
     # Save
     output_dir = f'./model_outputs/{model_type.lower()}'
     timestamp = save_model_and_metrics(
         best_model, best_params, cv_scores, feature_importance, X, y,
-        output_dir=output_dir
+        output_dir=output_dir, title=model_type
     )
     
     print(f"\nDone! Results saved to {output_dir}")

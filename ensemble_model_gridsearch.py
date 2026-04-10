@@ -14,6 +14,8 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_curve, precision_recall_curve
 import seaborn as sns
+import warnings
+warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
 
 seed = 42
 
@@ -21,7 +23,7 @@ def flux2mag(flux):
     mags = 22.5 - 2.5*np.log10(flux)
     return mags
 
-def augment_lensed_magnitudes(df, n_augmentations=3):
+def augment_lensed_magnitudes(lensed_df, n_augmentations=3):
     """
     Augment magnitudes based on photometric uncertainties
     Recalculate colors from augmented magnitudes
@@ -39,9 +41,10 @@ def augment_lensed_magnitudes(df, n_augmentations=3):
         Original + augmented samples
     """
     bands = ['g', 'r', 'i', 'z', 'w1', 'w2']
-    lensed = df[df.lensed==True]
+    # lensed_df = lensed_df[lensed_df.lensed==True]
     
-    augmented_df = lensed.copy()  # Start with original lenses
+    augmented_df = lensed_df.copy()  # Start with original lenses
+    # augmented_df['original_idx'] = lensed_df.index
     augmented_df = pd.concat([augmented_df.copy() for _ in range(n_augmentations)])
 
     for b in util.bands:
@@ -57,14 +60,14 @@ def augment_lensed_magnitudes(df, n_augmentations=3):
     augmented_df['w1_w2'] = augmented_df['dered_mag_w1'] - augmented_df['dered_mag_w2']
     
     # Concat with original
-    df_combined = pd.concat([lensed.copy(), augmented_df], ignore_index=True)
+    # df_combined = pd.concat([lensed.copy(), augmented_df], ignore_index=True)
     
-    print(f"Augmentation complete:")
-    print(f"  Original samples: {len(df)}")
-    print(f"  Augmented samples: {len(df_combined)}")
-    print(f"  Augmentation factor: {len(df_combined) / len(df):.1f}x")
+    # print(f"Augmentation complete:")
+    # print(f"  Original samples: {len(df)}")
+    # print(f"  Augmented samples: {len(df_combined)}")
+    # print(f"  Augmentation factor: {len(df_combined) / len(df):.1f}x")
     
-    return df_combined
+    return augmented_df
 
 
 def add_prospector_features(df):
@@ -106,19 +109,23 @@ def add_prospector_features(df):
     
     return df
     
-def prepare_model(df, target_col='lensed'):
+def prepare_model(df, augment=True, n_augmentations=3):
     """
     Prepare XGBoost model - impute missing data without indicators
     """
 
     # Add missing features to un-bias sample
+    df['original_idx'] = df.index
+    df = add_prospector_features(df)
     unlensed_df, lensed_df = df[df.lensed!=True].copy(), df[df.lensed==True].copy()
     # unlensed_df = match_iband(unlensed_df, lensed_df)
     unlensed_df['lensed']=False
 
-    df = pd.concat([lensed_df, unlensed_df]).sample(frac=1).reset_index(drop=True)
-    df = add_prospector_features(df)
+    if augment:
+        augmented_df = augment_lensed_magnitudes(lensed_df, n_augmentations)
 
+    df = pd.concat([lensed_df, unlensed_df]).sample(frac=1).reset_index(drop=True)
+    
     # Calculate chi-squared columns
     rchisq = np.array(df[util.rchisq_labels])
     df['avg_rchisq'] = np.nanmean(rchisq, axis=1)
@@ -141,7 +148,7 @@ def prepare_model(df, target_col='lensed'):
     
     # Prepare data
     X = df[feature_cols].copy()
-    y = df[target_col].copy()
+    y = df['lensed'].copy()
     
     # Fix for column types
     X.columns = X.columns.astype(str)
@@ -173,8 +180,17 @@ def prepare_model(df, target_col='lensed'):
     scale_pos_weight = class_counts[0] / class_counts[1]
     print(f"Class distribution: {class_counts}")
     print(f"Scale pos weight: {scale_pos_weight:.2f}")
-    
-    return X, y, scale_pos_weight, feature_cols
+
+    # Augment, if needed
+    if augment:
+        df[feature_cols] = X[feature_cols]
+        lensed_df = df[df.lensed==True].copy()
+        augmented_df = augment_lensed_magnitudes(lensed_df, n_augmentations)
+        # augmented_X = augmented_df[feature_cols+['original_idx']]
+    else:
+        augmented_df = None
+
+    return X, y, augmented_df, scale_pos_weight, feature_cols
 
 # --- Keep all your existing functions unchanged ---
 # flux2mag, augment_lensed_magnitudes, add_prospector_features, 
@@ -214,13 +230,13 @@ def train_model_gridsearch(X, y, scale_pos_weight, model_type='XGB'):
             n_jobs=-1,
         )
         param_grid = {
-            'max_depth': [3, 4, 5, 6],
+            'max_depth': [3, 4, 5, 6, None],
             'learning_rate': [0.05, 0.1, 0.15],
-            'n_estimators': [100, 200, 300],
-            'subsample': [0.8, 0.9, 1.0],
-            'colsample_bytree': [0.8, 0.9, 1.0],
-            'reg_alpha': [0, 0.1, 0.5],
-            'reg_lambda': [1, 1.5, 2],
+            'n_estimators': [100, 200, 300, 500, 1000],
+            'subsample': [0.6, 0.8, 0.9, 1.0],
+            'colsample_bytree': [0.6, 0.8, 0.9, 1.0],
+            'reg_alpha': [0, 0.1, 0.5, 0.9],
+            'reg_lambda': [.5, 1, 1.5, 2, 3],
         }
         
     elif model_type == 'RF':
@@ -230,13 +246,13 @@ def train_model_gridsearch(X, y, scale_pos_weight, model_type='XGB'):
             n_jobs=-1,
         )
         param_grid = {
-            'n_estimators': [100, 200, 300, 500],
+            'n_estimators': [100, 200, 300, 500, 800, 1000],
             'max_depth': [3, 5, 8, 10, None],       # None = fully grown trees
-            'min_samples_split': [2, 5, 10],         # Min samples to split a node
-            'min_samples_leaf': [1, 2, 4],           # Min samples at leaf node
+            'min_samples_split': [3, 5, 10],         # Min samples to split a node
+            'min_samples_leaf': [2, 4, 6],           # Min samples at leaf node
             'max_features': ['sqrt', 'log2', 0.5],   # Features to consider per split
-            'max_samples': [0.7, 0.8, 0.9, None],    # Bootstrap sample size
-            # 'class_weight': ['balanced_subsample', {0: 1, 1: scale_pos_weight}]
+            'max_samples': [0.6, 0.7, 0.8, 0.9],    # Bootstrap sample size
+            'class_weight': ['balanced', 'balanced_subsample', {0: 1, 1: scale_pos_weight}, None]
         }
     else:
         raise ValueError(f"Unknown model_type '{model_type}'. Choose 'XGB' or 'RF'.")
@@ -310,7 +326,7 @@ def train_with_best_params(X, y, scale_pos_weight, best_params, model_type='XGB'
     return model, best_params
 
 
-def evaluate_model(model, X, y, feature_cols):
+def evaluate_model(model, X, y, feature_cols, augmented_df=None):
     """
     Evaluate model performance and feature importance
     """
@@ -325,6 +341,15 @@ def evaluate_model(model, X, y, feature_cols):
     for train_idx, val_idx in cv.split(X, y):
         X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
         y_train, y_val = y[train_idx], y[val_idx]  # Changed from .iloc to direct indexing
+
+        if augmented_df is not None:
+            augmented_df = pd.concat([augmented_df[augmented_df.original_idx==i] 
+                                  for i in train_idx])
+            # augmented_df.drop(labels=['original_idx'], inplace=True)
+            augmented_X = augmented_df[X_train.columns]
+            augmented_y = np.array([True]*len(augmented_X)).reshape(-1)
+            X_train = pd.concat([X_train, augmented_X]).reset_index(drop=True)
+            y_train = np.concatenate([y_train, augmented_y])
         
         model.fit(X_train, y_train)
         y_pred_proba = model.predict_proba(X_val)[:, 1]
@@ -345,7 +370,7 @@ def evaluate_model(model, X, y, feature_cols):
 
 
 def save_model_and_metrics(best_model, best_params, cv_scores, feature_importance, 
-                          X, y, output_dir='./model_outputs'):
+                          X, y, output_dir='./model_outputs', title='RF'):
     """
     Save trained model, parameters, and performance metrics
     """
@@ -395,7 +420,7 @@ def save_model_and_metrics(best_model, best_params, cv_scores, feature_importanc
     plt.plot([0, 1], [0, 1], 'k--', label='Random Classifier')
     plt.xlabel('False Positive Rate')
     plt.ylabel('True Positive Rate')
-    plt.title('ROC Curve - Lens Classification')
+    plt.title(f'ROC Curve - {title} Classification')
     plt.legend()
     plt.grid(True, alpha=0.3)
     roc_path = f'{output_dir}/roc_curve_{timestamp}.png'
@@ -410,7 +435,7 @@ def save_model_and_metrics(best_model, best_params, cv_scores, feature_importanc
     plt.plot(recall, precision, label='Precision-Recall Curve')
     plt.xlabel('Recall')
     plt.ylabel('Precision')
-    plt.title('Precision-Recall Curve - Lens Classification')
+    plt.title(f'Precision-Recall Curve - {title} Classification')
     plt.legend()
     plt.grid(True, alpha=0.3)
     pr_path = f'{output_dir}/precision_recall_{timestamp}.png'
@@ -423,7 +448,7 @@ def save_model_and_metrics(best_model, best_params, cv_scores, feature_importanc
     cm = confusion_matrix(y, y_pred)
     
     # Print the confusion matrix values for debugging
-    print(f"\nConfusion Matrix:")
+    print(f"\n{title} Confusion Matrix:")
     print(f"                Predicted Unlensed  Predicted Lensed")
     print(f"Actual Unlensed:      {cm[0,0]:6d}           {cm[0,1]:6d}")
     print(f"Actual Lensed:        {cm[1,0]:6d}           {cm[1,1]:6d}")
@@ -445,10 +470,10 @@ def save_model_and_metrics(best_model, best_params, cv_scores, feature_importanc
     plt.title('Confusion Matrix - Lens Classification')
     
     # Add text explanation
-    plt.text(0.5, -0.15, 
-             'Top-left: True Negatives | Top-right: False Positives\n' +
-             'Bottom-left: False Negatives | Bottom-right: True Positives',
-             ha='center', transform=plt.gca().transAxes, fontsize=9, style='italic')
+    # plt.text(0.5, -0.15, 
+    #          'Top-left: True Negatives | Top-right: False Positives\n' +
+    #          'Bottom-left: False Negatives | Bottom-right: True Positives',
+    #          ha='center', transform=plt.gca().transAxes, fontsize=9, style='italic')
     
     cm_path = f'{output_dir}/confusion_matrix_{timestamp}.png'
     plt.savefig(cm_path, dpi=300, bbox_inches='tight')
@@ -480,7 +505,7 @@ def save_model_and_metrics(best_model, best_params, cv_scores, feature_importanc
     plt.barh(range(len(top_features)), top_features['importance'])
     plt.yticks(range(len(top_features)), top_features['feature'])
     plt.xlabel('Importance')
-    plt.title('Top 15 Feature Importances')
+    plt.title(f'Top 15 Feature Importances - {title}')
     plt.gca().invert_yaxis()
     feat_imp_path = f'{output_dir}/feature_importance_plot_{timestamp}.png'
     plt.savefig(feat_imp_path, dpi=300, bbox_inches='tight')
@@ -505,13 +530,88 @@ def save_model_and_metrics(best_model, best_params, cv_scores, feature_importanc
     
     return timestamp
 
-def load_model(model_path):
+def load_model(output_dir, timestamp=None):
     """
-    Load a saved model
+    Load all saved files needed for evaluate_model.
+    If timestamp is None, loads the most recent files in output_dir.
+    
+    Parameters:
+    -----------
+    output_dir : str
+        Directory where model files are saved
+    timestamp : str, optional
+        Specific timestamp to load, e.g. '20240101_120000'
+        If None, loads the most recent files
+    
+    Returns:
+    --------
+    model : trained model
+    best_params : dict
+    cv_scores : list
+    feature_importance : DataFrame
+    feature_cols : list
+    metadata : dict
     """
+    import os
+    import glob
+    
+    if timestamp is None:
+        # Find most recent model file
+        model_files = glob.glob(os.path.join(output_dir, 'lens_classifier_*.pkl'))
+        if not model_files:
+            raise FileNotFoundError(f"No model files found in {output_dir}")
+        
+        # Sort by timestamp in filename and take most recent
+        model_path = sorted(model_files)[-1]
+        timestamp = model_path.split('lens_classifier_')[1].replace('.pkl', '')
+        print(f"Loading most recent model with timestamp: {timestamp}")
+    
+    # Build paths from timestamp
+    model_path      = os.path.join(output_dir, f'lens_classifier_{timestamp}.pkl')
+    params_path     = os.path.join(output_dir, f'best_params_{timestamp}.json')
+    cv_path         = os.path.join(output_dir, f'cv_metrics_{timestamp}.json')
+    feat_imp_path   = os.path.join(output_dir, f'feature_importance_{timestamp}.csv')
+    metadata_path   = os.path.join(output_dir, f'model_metadata_{timestamp}.json')
+    
+    # Check all files exist before loading
+    missing = [p for p in [model_path, params_path, cv_path, feat_imp_path, metadata_path]
+               if not os.path.exists(p)]
+    if missing:
+        raise FileNotFoundError(f"Missing files for timestamp {timestamp}:\n" + 
+                                '\n'.join(missing))
+    
+    # Load model
     with open(model_path, 'rb') as f:
         model = pickle.load(f)
-    return model
+    print(f"Loaded model from: {model_path}")
+    
+    # Load hyperparameters
+    with open(params_path, 'r') as f:
+        best_params = json.load(f)
+    print(f"Loaded parameters from: {params_path}")
+    
+    # Load CV metrics
+    with open(cv_path, 'r') as f:
+        cv_metrics = json.load(f)
+    cv_scores = cv_metrics['cv_auc_scores']
+    print(f"Loaded CV metrics from: {cv_path}")
+    
+    # Load feature importance
+    feature_importance = pd.read_csv(feat_imp_path)
+    print(f"Loaded feature importance from: {feat_imp_path}")
+    
+    # Load metadata
+    with open(metadata_path, 'r') as f:
+        metadata = json.load(f)
+    feature_cols = metadata['feature_names']
+    print(f"Loaded metadata from: {metadata_path}")
+    
+    print(f"\nModel summary:")
+    print(f"  Timestamp: {timestamp}")
+    print(f"  Features: {feature_cols}")
+    print(f"  CV AUC: {cv_metrics['mean_auc']:.4f} ± {cv_metrics['std_auc']:.4f}")
+    
+    return model, best_params, cv_scores, feature_importance, feature_cols, metadata
 
 # Best params for each model type
 xgb_best_params = {
