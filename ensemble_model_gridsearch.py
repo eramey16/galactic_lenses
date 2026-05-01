@@ -230,29 +230,29 @@ def train_model_gridsearch(X, y, scale_pos_weight, model_type='XGB'):
             n_jobs=-1,
         )
         param_grid = {
-            'max_depth': [3, 4, 5, 6, None],
+            'max_depth': [3, 4, 5, 6],
             'learning_rate': [0.05, 0.1, 0.15],
-            'n_estimators': [100, 200, 300, 500, 1000],
+            'n_estimators': [100, 200, 300, 500],
             'subsample': [0.6, 0.8, 0.9, 1.0],
             'colsample_bytree': [0.6, 0.8, 0.9, 1.0],
-            'reg_alpha': [0, 0.1, 0.5, 0.9],
-            'reg_lambda': [.5, 1, 1.5, 2, 3],
+            'reg_alpha': [0, 0.1, 0.5],
+            'reg_lambda': [.5, 1, 1.5, 2],
         }
         
     elif model_type == 'RF':
         base_model = RandomForestClassifier(
             random_state=seed,
-            class_weight={0: 1, 1: scale_pos_weight},  # Equivalent to scale_pos_weight
+            # class_weight={0: 1, 1: scale_pos_weight},  # Equivalent to scale_pos_weight
             n_jobs=-1,
         )
         param_grid = {
             'n_estimators': [100, 200, 300, 500, 800, 1000],
-            'max_depth': [3, 5, 8, 10, None],       # None = fully grown trees
+            'max_depth': [3, 5, 8, 10, 15, 20],       # None = fully grown trees
             'min_samples_split': [3, 5, 10],         # Min samples to split a node
             'min_samples_leaf': [2, 4, 6],           # Min samples at leaf node
             'max_features': ['sqrt', 'log2', 0.5],   # Features to consider per split
             'max_samples': [0.6, 0.7, 0.8, 0.9],    # Bootstrap sample size
-            'class_weight': ['balanced', 'balanced_subsample', {0: 1, 1: scale_pos_weight}, None]
+            # 'class_weight': ['balanced', 'balanced_subsample', {0: 1, 1: scale_pos_weight}, None]
         }
     else:
         raise ValueError(f"Unknown model_type '{model_type}'. Choose 'XGB' or 'RF'.")
@@ -314,7 +314,7 @@ def train_with_best_params(X, y, scale_pos_weight, best_params, model_type='XGB'
     elif model_type == 'RF':
         model = RandomForestClassifier(
             random_state=seed,
-            class_weight={0: 1, 1: scale_pos_weight},
+            # class_weight={0: 1, 1: scale_pos_weight},
             n_jobs=-1,
             **best_params
         )
@@ -326,47 +326,84 @@ def train_with_best_params(X, y, scale_pos_weight, best_params, model_type='XGB'
     return model, best_params
 
 
-def evaluate_model(model, X, y, feature_cols, augmented_df=None):
+def evaluate_model(model, X, y, feature_cols, augmented_df=None, threshold=0.5):
     """
-    Evaluate model performance and feature importance
-    """
+    Evaluate model performance and feature importance.
     
-    # Convert y to numpy array of integers to avoid type issues
+    Parameters:
+    -----------
+    model : trained classifier
+    X : DataFrame
+        Feature matrix
+    y : array-like
+        True labels
+    feature_cols : list
+        Feature column names
+    augmented_df : DataFrame, optional
+        Augmented training data with original_idx column
+    threshold : float, optional
+        Decision boundary for classification (default 0.5)
+        Values > threshold classified as lensed
+    
+    Returns:
+    --------
+    cv_scores : list of AUC scores per fold
+    feature_importance : DataFrame
+    all_y_true : array of true labels across all folds
+    all_y_proba : array of predicted probabilities across all folds
+    """
     y = np.array(y).astype(int)
     
-    # Cross-validation evaluation
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     cv_scores = []
+    all_y_true, all_y_proba = [], []
 
     for train_idx, val_idx in cv.split(X, y):
         X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
-        y_train, y_val = y[train_idx], y[val_idx]  # Changed from .iloc to direct indexing
+        y_train, y_val = y[train_idx], y[val_idx]
 
         if augmented_df is not None:
-            augmented_df = pd.concat([augmented_df[augmented_df.original_idx==i] 
+            aug_fold = pd.concat([augmented_df[augmented_df.original_idx == i]
                                   for i in train_idx])
-            # augmented_df.drop(labels=['original_idx'], inplace=True)
-            augmented_X = augmented_df[X_train.columns]
-            augmented_y = np.array([True]*len(augmented_X)).reshape(-1)
+            augmented_X = aug_fold[X_train.columns]
+            augmented_y = np.ones(len(augmented_X), dtype=int)
             X_train = pd.concat([X_train, augmented_X]).reset_index(drop=True)
             y_train = np.concatenate([y_train, augmented_y])
-        
+
         model.fit(X_train, y_train)
         y_pred_proba = model.predict_proba(X_val)[:, 1]
+        
+        all_y_true.extend(y_val)
+        all_y_proba.extend(y_pred_proba)
         cv_scores.append(roc_auc_score(y_val, y_pred_proba))
+
+    all_y_true = np.array(all_y_true)
+    all_y_proba = np.array(all_y_proba)
     
-    print(f"Cross-validation AUC: {np.mean(cv_scores):.3f} ± {np.std(cv_scores):.3f}")
+    # Apply threshold
+    all_y_pred = (all_y_proba >= threshold).astype(int)
     
+    # Metrics at chosen threshold
+    tn, fp, fn, tp = confusion_matrix(all_y_true, all_y_pred).ravel()
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+    recall    = tp / (tp + fn) if (tp + fn) > 0 else 0
+    
+    print(f"\nCross-validation AUC: {np.mean(cv_scores):.4f} ± {np.std(cv_scores):.4f}")
+    print(f"\nMetrics at threshold={threshold:.2f}:")
+    print(f"  Precision: {precision:.4f}")
+    print(f"  Recall:    {recall:.4f}")
+    print(f"  TP: {tp}, FP: {fp}, TN: {tn}, FN: {fn}")
+
     # Feature importance
     feature_importance = pd.DataFrame({
         'feature': feature_cols,
         'importance': model.feature_importances_
     }).sort_values('importance', ascending=False)
-    
+
     print("\nFeature Importance:")
     print(feature_importance)
-    
-    return cv_scores, feature_importance
+
+    return cv_scores, feature_importance, all_y_true, all_y_proba
 
 
 def save_model_and_metrics(best_model, best_params, cv_scores, feature_importance, 
@@ -418,10 +455,10 @@ def save_model_and_metrics(best_model, best_params, cv_scores, feature_importanc
     plt.figure(figsize=(8, 6))
     plt.plot(fpr, tpr, label=f'ROC Curve (AUC = {np.mean(cv_scores):.3f})')
     plt.plot([0, 1], [0, 1], 'k--', label='Random Classifier')
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.title(f'ROC Curve - {title} Classification')
-    plt.legend()
+    plt.xlabel('False Positive Rate', fontsize=16)
+    plt.ylabel('True Positive Rate', fontsize=16)
+    plt.title(f'ROC Curve - {title} Classification', fontsize=20)
+    # plt.legend()
     plt.grid(True, alpha=0.3)
     roc_path = f'{output_dir}/roc_curve_{timestamp}.png'
     plt.savefig(roc_path, dpi=300, bbox_inches='tight')
@@ -433,10 +470,10 @@ def save_model_and_metrics(best_model, best_params, cv_scores, feature_importanc
     
     plt.figure(figsize=(8, 6))
     plt.plot(recall, precision, label='Precision-Recall Curve')
-    plt.xlabel('Recall')
-    plt.ylabel('Precision')
-    plt.title(f'Precision-Recall Curve - {title} Classification')
-    plt.legend()
+    plt.xlabel('Recall', fontsize=16)
+    plt.ylabel('Precision', fontsize=16)
+    plt.title(f'Precision-Recall Curve - {title} Classification', fontsize=20)
+    # plt.legend()
     plt.grid(True, alpha=0.3)
     pr_path = f'{output_dir}/precision_recall_{timestamp}.png'
     plt.savefig(pr_path, dpi=300, bbox_inches='tight')
@@ -467,7 +504,7 @@ def save_model_and_metrics(best_model, best_params, cv_scores, feature_importanc
                 cbar_kws={'label': 'Count'})
     plt.xlabel('Predicted Class')
     plt.ylabel('Actual Class')
-    plt.title('Confusion Matrix - Lens Classification')
+    plt.title(f'Confusion Matrix - {title} Classification')
     
     # Add text explanation
     # plt.text(0.5, -0.15, 
@@ -504,8 +541,8 @@ def save_model_and_metrics(best_model, best_params, cv_scores, feature_importanc
     top_features = feature_importance.head(15)
     plt.barh(range(len(top_features)), top_features['importance'])
     plt.yticks(range(len(top_features)), top_features['feature'])
-    plt.xlabel('Importance')
-    plt.title(f'Top 15 Feature Importances - {title}')
+    plt.xlabel('Importance', fontsize=16)
+    plt.title(f'Top 15 Feature Importances - {title}', fontsize=20)
     plt.gca().invert_yaxis()
     feat_imp_path = f'{output_dir}/feature_importance_plot_{timestamp}.png'
     plt.savefig(feat_imp_path, dpi=300, bbox_inches='tight')
@@ -624,7 +661,15 @@ xgb_best_params = {
     "subsample": 0.9
 }
 
-rf_best_params = {}  # Fill in after running grid search
+rf_best_params = {
+    "class_weight": "balanced_subsample",
+    "max_depth": 10,
+    "max_features": 0.5,
+    "max_samples": 0.8,
+    "min_samples_leaf": 4,
+    "min_samples_split": 10,
+    "n_estimators": 500
+}  # Fill in after running grid search
 
 # Usage example:
 # X, y, scale_pos_weight, feature_cols = prepare_xgboost_model(your_df)

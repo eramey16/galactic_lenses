@@ -42,13 +42,20 @@ def main(model_type='XGB', use_grid_search=True):
         )
     
     # Evaluate
-    cv_scores, feature_importance = evaluate_model(best_model, X, y, feature_cols, augmented_X)
+    cv_scores, feature_importance, _, _ = evaluate_model(best_model, X, y, feature_cols, augmented_X)
     
     # Save
     output_dir = f'./model_outputs/{model_type.lower()}'
     timestamp = save_model_and_metrics(
         best_model, best_params, cv_scores, feature_importance, X, y,
         output_dir=output_dir, title=model_type
+    )
+
+    # Train shifted
+    cv_scores, feature_importance, _, _ = evaluate_model(best_model, X, y, feature_cols, augmented_X, threshold=0.9)
+    timestamp = save_model_and_metrics(
+        best_model, best_params, cv_scores, feature_importance, X, y,
+        output_dir=output_dir+"_shifted", title=model_type
     )
     
     print(f"\nDone! Results saved to {output_dir}")
